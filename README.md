@@ -62,6 +62,18 @@ Run a terminal game against the random agent from a source checkout:
 python3 examples/human_vs_random.py --seed 7 --log games/match.json
 ```
 
+To play against the deterministic rule-based baseline instead, select the
+heuristic opponent:
+
+```bash
+python3 examples/human_vs_random.py --opponent heuristic --seed 7
+```
+
+The heuristic chooses among the same legal actions as the random agent. It
+uses only the acting player's visible observation, so it cannot inspect the
+opponent's hidden hand or deck. It is a simple baseline, not a card-effect
+simulator.
+
 The optional log contains accepted player decisions, the initial decks, a
 pre-start RNG snapshot, and the result. It is saved after each decision, so an
 interrupted game leaves a partial log. It may reveal both players' private
