@@ -14,6 +14,7 @@ from pprint import pformat
 from typing import Callable, TextIO
 
 from .agent_api import Action
+from .heuristic_agent import HeuristicAgent
 
 
 class UserQuit(Exception):
@@ -255,4 +256,4 @@ class HumanTUIAgent:
             self._write("Invalid input: choose a number from 1 to %d." % len(actions))
 
 
-__all__ = ["HumanTUIAgent", "RandomAgent", "UserQuit"]
+__all__ = ["HeuristicAgent", "HumanTUIAgent", "RandomAgent", "UserQuit"]

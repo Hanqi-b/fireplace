@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Play a random Fireplace deck against a human in the terminal.
+"""Play a Fireplace game against a computer agent in the terminal.
 
 Run from the repository root with ``python examples/human_vs_random.py``.
 The example intentionally constructs the game here so the application layer
@@ -22,29 +22,31 @@ from hearthstone.enums import PlayState
 
 from fireplace import cards
 from fireplace.action_log import ActionLog
-from fireplace.agents import HumanTUIAgent, RandomAgent, UserQuit
+from fireplace.agents import HeuristicAgent, HumanTUIAgent, RandomAgent, UserQuit
 from fireplace.controller import GameSession
 from fireplace.game import Game
 from fireplace.player import Player
 from fireplace.utils import random_class, random_draft
 
 
-def build_game(seed: int | None = None) -> tuple[Game, Player, Player]:
+def build_game(
+    seed: int | None = None, opponent_name: str = "Random"
+) -> tuple[Game, Player, Player]:
     """Create two random classes/decks using the game's seeded RNG."""
 
     # Empty starting decks are only placeholders while the Game owns the RNG;
     # they are filled before ``GameSession.start`` calls ``game.start()``.
     human = Player("Human", [], "HERO_01")
-    random_player = Player("Random", [], "HERO_01")
-    game = Game((human, random_player), seed=seed)
+    opponent = Player(opponent_name, [], "HERO_01")
+    game = Game((human, opponent), seed=seed)
 
     human_class = random_class(game)
-    random_class_ = random_class(game)
+    opponent_class = random_class(game)
     human.starting_hero = human_class.default_hero
-    random_player.starting_hero = random_class_.default_hero
+    opponent.starting_hero = opponent_class.default_hero
     human.starting_deck = random_draft(human_class, game=game)
-    random_player.starting_deck = random_draft(random_class_, game=game)
-    return game, human, random_player
+    opponent.starting_deck = random_draft(opponent_class, game=game)
+    return game, human, opponent
 
 
 def _winner_text(game: Game) -> str:
@@ -71,20 +73,33 @@ def main(argv: list[str] | None = None) -> int:
         metavar="PATH",
         help="save accepted player decisions and game metadata as JSON",
     )
+    parser.add_argument(
+        "--opponent",
+        choices=("random", "heuristic"),
+        default="random",
+        help="computer opponent policy (default: random)",
+    )
     args = parser.parse_args(argv)
 
     cards.db.initialize()
-    game, human, random_player = build_game(args.seed)
-    agents = {
-        human: HumanTUIAgent(),
-        random_player: RandomAgent(seed=args.seed),
-    }
-    action_log = ActionLog(game, mode="human_vs_random", output_path=args.log,
-                           seed=args.seed)
+    opponent_name = "Heuristic" if args.opponent == "heuristic" else "Random"
+    game, human, opponent = build_game(args.seed, opponent_name)
+    opponent_agent = (
+        HeuristicAgent()
+        if args.opponent == "heuristic"
+        else RandomAgent(seed=args.seed)
+    )
+    agents = {human: HumanTUIAgent(), opponent: opponent_agent}
+    action_log = ActionLog(
+        game,
+        mode="human_vs_%s" % args.opponent,
+        output_path=args.log,
+        seed=args.seed,
+    )
 
     print(
-        "Human (%s) vs Random (%s). Choose an action number when it is your turn."
-        % (human.starting_hero, random_player.starting_hero)
+        "Human (%s) vs %s (%s). Choose an action number when it is your turn."
+        % (human.starting_hero, opponent_name, opponent.starting_hero)
     )
     try:
         GameSession(game, agents, action_log=action_log).run()
