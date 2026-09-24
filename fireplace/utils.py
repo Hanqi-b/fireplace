@@ -196,94 +196,80 @@ def weighted_card_choice(source, weights: List[int], card_sets: List[str], count
     return [source.controller.card(card, source=source) for card in chosen_cards]
 
 
-def setup_game():
+def setup_game(seed=None, start=True):
     from .game import Game
     from .player import Player
 
-    card_class1 = random_class()
-    card_class2 = random_class()
-    deck1 = random_draft(card_class1)
-    deck2 = random_draft(card_class2)
+    # Create the game first so every setup decision comes from the same
+    # per-game RNG that the engine uses after startup.
+    game = Game(seed=seed)
+    card_class1 = random_class(game)
+    card_class2 = random_class(game)
+    deck1 = random_draft(card_class1, game=game)
+    deck2 = random_draft(card_class2, game=game)
     player1 = Player("Player1", deck1, card_class1.default_hero)
     player2 = Player("Player2", deck2, card_class2.default_hero)
 
-    game = Game(players=(player1, player2))
-    game.start()
+    game.players = (player1, player2)
+    for player in game.players:
+        player.game = game
+    if start:
+        game.start()
 
     return game
 
 
 def play_turn(game):
-    player = game.current_player
+    # Keep the old batch-simulation entry point, but make its decisions cross
+    # the same validated boundary used by the interactive application.
+    from .agents import RandomAgent
+    from .controller import GameSession, decision_player
 
-    while True:
-        while player.choice:
-            choice = game.random.choice(player.choice.cards)
-            log.info("Choosing card %r" % (choice))
-            player.choice.choose(choice)
+    session = getattr(game, "_random_session", None)
+    if session is None:
+        # Keep policy choices on their own stream.  Replaying recorded
+        # actions skips those policy draws, so sharing ``game.random`` would
+        # shift every later engine decision.
+        agent = RandomAgent(seed=getattr(game, "seed", None))
+        session = GameSession(game, {player: agent for player in game.players})
+        game._random_session = session
 
-        heropower = player.hero.power
-        if heropower.is_usable() and game.random.random() < 0.1:
-            choose = None
-            target = None
-            if heropower.must_choose_one:
-                choose = game.random.choice(heropower.choose_cards)
-            if heropower.requires_target():
-                target = game.random.choice(heropower.targets)
-            heropower.use(target=target, choose=choose)
-            continue
-
-        # eg. Deathstalker Rexxar
-        while player.choice:
-            choice = game.random.choice(player.choice.cards)
-            log.info("Choosing card %r" % (choice))
-            player.choice.choose(choice)
-
-        # iterate over our hand and play whatever is playable
-        for card in player.hand:
-            if card.is_playable() and game.random.random() < 0.5:
-                target = None
-                if card.must_choose_one:
-                    card = game.random.choice(card.choose_cards)
-                    if not card.is_playable():
-                        continue
-                log.info("Playing %r" % card)
-                if card.requires_target():
-                    target = game.random.choice(card.targets)
-                log.info("Target on %r" % target)
-                card.play(target=target)
-
-                while player.choice:
-                    choice = game.random.choice(player.choice.cards)
-                    log.info("Choosing card %r" % (choice))
-                    player.choice.choose(choice)
-
-                continue
-
-        # Randomly attack with whatever can attack
-        for character in player.characters:
-            if character.can_attack():
-                character.attack(game.random.choice(character.targets))
-                # eg. Vicious Fledgling
-                while player.choice:
-                    choice = game.random.choice(player.choice.cards)
-                    log.info("Choosing card %r" % (choice))
-                    player.choice.choose(choice)
-
-        break
-
-    game.end_turn()
+    starting_player = game.current_player
+    while game.current_player is starting_player or any(
+        player.choice for player in game.players
+    ):
+        player = decision_player(game)
+        action = session.agents[player].choose_action(
+            session.observation(player), session.legal_actions(player)
+        )
+        session.execute(player, action)
     return game
 
 
-def play_full_game():
-    game = setup_game()
+def play_full_game(seed=None, action_log=None):
+    from .agents import RandomAgent
+    from .action_log import ActionLog
+    from .controller import GameSession, decision_player
 
-    for player in game.players:
-        log.info("Can mulligan %r" % (player.choice.cards))
-        mull_count = game.random.randint(0, len(player.choice.cards))
-        cards_to_mulligan = game.random.sample(player.choice.cards, mull_count)
-        player.choice.choose(*cards_to_mulligan)
+    game = setup_game(seed=seed, start=False)
+    # The game RNG is reserved for setup and engine effects.  The policy gets
+    # a separate deterministic stream when a seed was supplied.
+    agent = RandomAgent(seed=seed)
+    if action_log is None:
+        action_log = ActionLog(game, seed=seed)
+    elif isinstance(action_log, (str, os.PathLike)):
+        action_log = ActionLog(game, output_path=action_log, seed=seed)
+    session = GameSession(
+        game, {player: agent for player in game.players}, action_log=action_log
+    )
+    game._random_session = session
+    session.start()
+    while any(player.choice for player in game.players):
+        player = decision_player(game)
+        action = agent.choose_action(
+            session.observation(player), session.legal_actions(player)
+        )
+        session.execute(player, action)
 
     while True:
         play_turn(game)

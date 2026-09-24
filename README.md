@@ -54,6 +54,31 @@ Now updated to [Patch 17.6.0.53261](https://hearthstone.wiki.gg/wiki/Patch_17.6.
 The [Fireplace Wiki](https://github.com/jleclanche/fireplace/wiki) is the best
 source of documentation, along with the actual code.
 
+## Human game and decision log
+
+Run a terminal game against the random agent from a source checkout:
+
+```bash
+python3 examples/human_vs_random.py --seed 7 --log games/match.json
+```
+
+The optional log contains accepted player decisions, the initial decks, a
+pre-start RNG snapshot, and the result. It is saved after each decision, so an
+interrupted game leaves a partial log. It may reveal both players' private
+cards and choices; keep the file private.
+
+Replay and verify a completed standard game with the same Python, Fireplace,
+and card-data versions:
+
+```bash
+python3 examples/replay_log.py games/match.json
+```
+
+Replay starts at the beginning, applies the recorded decisions, and compares
+the final normalized game state. Logs attached after a game starts and older
+decision logs without a pre-start RNG snapshot cannot be replayed. UUIDs and
+wall-clock timestamps are excluded from the comparison.
+
 
 ## License
 
