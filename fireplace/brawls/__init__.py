@@ -85,13 +85,12 @@ class BlackrockShowdownBrawl(Game):
     )
 
     @classmethod
-    def new_game(cls, *players):
-        import random
-
-        decks = random.sample((cls.NEFARIAN_DECK, cls.RAGNAROS_DECK), 2)
+    def new_game(cls, *players, seed=None):
+        game = cls(players, seed=seed)
+        decks = game.random.sample((cls.NEFARIAN_DECK, cls.RAGNAROS_DECK), 2)
         for player, deck in zip(players, decks):
             player.starting_deck, player.starting_hero = deck
-        return cls(players)
+        return game
 
     def setup(self):
         super().setup()
@@ -128,10 +127,10 @@ class SpidersEverywhereBrawl(Game):
     Webspinners.
     """
 
-    def __init__(self, players):
+    def __init__(self, players, seed=None):
         from .. import cards
 
-        super().__init__(players)
+        super().__init__(players, seed=seed)
         for player in players:
             hero = player.starting_hero
             player_class = getattr(cards, hero).card_class
@@ -164,10 +163,10 @@ class CrossroadsEncounterBrawl(Game):
     Let's see what's in your deck this time!
     """
 
-    def __init__(self, players):
+    def __init__(self, players, seed=None):
         from .. import cards
 
-        super().__init__(players)
+        super().__init__(players, seed=seed)
         for player in players:
             hero = player.starting_hero
             player_class = getattr(cards, hero).card_class
@@ -204,10 +203,10 @@ class TooManyPortalsBrawl(Game):
 
     UNSTABLE_PORTAL = "GVG_003"
 
-    def __init__(self, players):
+    def __init__(self, players, seed=None):
         from .. import cards
 
-        super().__init__(players)
+        super().__init__(players, seed=seed)
         for player in players:
             hero = player.starting_hero
             player_class = getattr(cards, hero).card_class
@@ -312,13 +311,12 @@ class GrandTournamentBrawl(Game):
     )
 
     @classmethod
-    def new_game(cls, *players):
-        import random
-
-        decks = random.sample((cls.ALLERIA_DECK, cls.MEDIVH_DECK), 2)
+    def new_game(cls, *players, seed=None):
+        game = cls(players, seed=seed)
+        decks = game.random.sample((cls.ALLERIA_DECK, cls.MEDIVH_DECK), 2)
         for player, deck in zip(players, decks):
             player.starting_deck, player.starting_hero = deck
-        return cls(players)
+        return game
 
 
 class RainingManaBrawl(Game):

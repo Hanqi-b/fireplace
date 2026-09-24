@@ -1167,7 +1167,7 @@ class Discover(TargetedAction):
             discover_class = source.data.card_class
         else:
             # use random class for neutral hero classes with neutral cards
-            discover_class = random_class()
+            discover_class = random_class(source.game)
         if "card_class" in self._args[1].filters:
             picker = self._args[1] * 3
             return [picker.evaluate(source)]

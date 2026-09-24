@@ -37,11 +37,13 @@ class BaseGame(Entity):
     MAX_SECRETS_ON_PLAY = 5
     Manager = GameManager
 
-    def __init__(self, players: "list[Player]", seed=None):
+    def __init__(self, players: "list[Player]" = (), seed=None):
+        self.seed = seed
         self.random = Random(seed)
         self.player1: Player
         self.player2: Player
         self.data = None
+        players = players or ()
         self.players = players
         super().__init__()
         for player in players:
