@@ -842,6 +842,42 @@ button.extra-chip {
   align-items: stretch;
 }
 
+.quick-actions {
+  display: grid;
+  gap: 10px;
+  border: 1px solid rgb(83 118 154 / 34%);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgb(5 10 20 / 18%);
+}
+
+.quick-action-group {
+  min-width: 0;
+}
+
+.quick-action-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 7px;
+}
+
+.quick-action-button {
+  border: 1px solid var(--border-bright);
+  border-radius: 9px;
+  padding: 8px 11px;
+  background: linear-gradient(160deg, #263f62, #1a2c48);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 0.79rem;
+  font-weight: 720;
+}
+
+.quick-action-button:hover {
+  border-color: var(--accent);
+  background: var(--surface-soft);
+}
+
 .tool-heading {
   flex-basis: 100%;
   margin: 4px 0 0;

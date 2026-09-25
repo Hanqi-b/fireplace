@@ -73,6 +73,7 @@
       "action-count",
       "action-instructions",
       "selection-summary",
+      "quick-actions",
       "choice-options",
       "position-choices",
       "target-hint",
@@ -1212,6 +1213,8 @@
   }
 
   function renderDecision() {
+    clear(elements["quick-actions"]);
+    setHidden(elements["quick-actions"], true);
     clear(elements["choice-options"]);
     clear(elements["position-choices"]);
     clear(elements["pending-choice"]);
@@ -1252,6 +1255,9 @@
     if (actionIndex.endTurn.length === 1) {
       setHidden(elements["end-turn-button"], false);
     }
+    if (selection.sourceId === null) {
+      renderQuickActions();
+    }
     var candidates = selectedActions();
     if (selection.sourceId !== null) {
       setHidden(elements["selection-cancel"], false);
@@ -1271,8 +1277,66 @@
         setText(elements["action-instructions"], "这个选择已经不再合法，请取消后重新选择。");
       }
     } else {
-      setText(elements["action-instructions"], "点击手牌、场面随从或英雄技能开始操作；目标会自动高亮。");
+      setText(elements["action-instructions"], "选择下方操作，或直接点击手牌、场面随从和英雄技能；需要目标时会高亮。");
     }
+  }
+
+  function renderQuickActions() {
+    var groups = [
+      { type: "PLAY_CARD", title: "出牌" },
+      { type: "ATTACK", title: "攻击" },
+      { type: "USE_HERO_POWER", title: "英雄技能" },
+    ];
+    groups.forEach(function (group) {
+      var actions = actionIndex.byType.get(group.type) || [];
+      var seen = new Set();
+      var sources = [];
+      actions.forEach(function (action) {
+        var id = entityId(action.source_entity_id);
+        if (id !== null && !seen.has(id)) {
+          seen.add(id);
+          sources.push(id);
+        }
+      });
+      if (!sources.length) {
+        return;
+      }
+      var section = document.createElement("section");
+      section.className = "quick-action-group";
+      var heading = document.createElement("h3");
+      heading.className = "tool-heading";
+      heading.textContent = group.title;
+      section.appendChild(heading);
+      var buttons = document.createElement("div");
+      buttons.className = "quick-action-list";
+      sources.forEach(function (id) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "quick-action-button";
+        button.setAttribute("data-testid", "quick-action");
+        button.setAttribute("data-action-type", group.type);
+        button.setAttribute("data-source-id", String(id));
+        button.textContent = group.title + " · " + labelForEntity(id) + sourceLocation(id, group.type);
+        button.addEventListener("click", function () { chooseSource(group.type, id); });
+        buttons.appendChild(button);
+      });
+      section.appendChild(buttons);
+      elements["quick-actions"].appendChild(section);
+    });
+    setHidden(elements["quick-actions"], !elements["quick-actions"].childElementCount);
+  }
+
+  function sourceLocation(id, type) {
+    var self = snapshot && snapshot.observation && snapshot.observation.self;
+    if (!isObject(self)) {
+      return "";
+    }
+    var zone = type === "PLAY_CARD" ? asArray(self.hand) : asArray(self.board);
+    var position = zone.findIndex(function (card) { return entityId(card.entity_id) === id; });
+    if (position >= 0) {
+      return type === "PLAY_CARD" ? " · 手牌 " + String(position + 1) : " · 场上 " + String(position + 1);
+    }
+    return "";
   }
 
   function renderPendingChoice(choice) {
@@ -1479,7 +1543,7 @@
       return "用 " + labelForEntity(action.source_entity_id) + " 攻击 " + labelForEntity(action.target_entity_id);
     }
     if (action.type === "USE_HERO_POWER") {
-      return "使用技能" + (action.target_entity_id !== undefined ? " → " + labelForEntity(action.target_entity_id) : "");
+      return "使用技能 " + labelForEntity(action.source_entity_id) + actionSuffix(action);
     }
     if (action.type === "END_TURN") {
       return "结束回合";

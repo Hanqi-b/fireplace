@@ -171,9 +171,9 @@ async function handCard(page, state, cardId, occurrence = 0) {
 
 async function clickPositionedMinion(page, cardId, position, label) {
   const before = await stateFromPage(page);
-  const { card, locator } = await handCard(page, before, cardId);
+  const { card } = await handCard(page, before, cardId);
   const result = await performAction(page, before, async () => {
-    await locator.click();
+    await page.locator(`[data-testid="quick-action"][data-action-type="PLAY_CARD"][data-source-id="${card.entity_id}"]`).click();
     const button = page.locator(`#position-choices button[data-position="${position}"]`);
     await button.waitFor({ state: "visible", timeout: Math.min(timeout, 2500) });
     await button.click();
@@ -186,10 +186,10 @@ async function clickPositionedMinion(page, cardId, position, label) {
 
 async function clickTargetedHandCard(page, cardId, label) {
   const before = await stateFromPage(page);
-  const { card, locator } = await handCard(page, before, cardId);
+  const { card } = await handCard(page, before, cardId);
   const targetId = before.observation.opponent.hero.entity_id;
   const result = await performAction(page, before, async () => {
-    await locator.click();
+    await page.locator(`[data-testid="quick-action"][data-action-type="PLAY_CARD"][data-source-id="${card.entity_id}"]`).click();
     await page.locator("#target-hint").waitFor({ state: "visible", timeout });
     await page.locator(`[data-testid="opponent-hero"] .targetable[data-entity-id="${targetId}"]`).click();
   }, label);
@@ -234,6 +234,7 @@ async function main() {
     await waitForPhase(page, "换牌");
     const mulliganState = await stateFromPage(page);
     assert.equal(mulliganState.observation.phase, "MULLIGAN");
+    assert.equal(await page.locator('[data-testid="quick-action"]').count(), 0, "MAIN buttons should not appear during Mulligan");
     assert(mulliganState.observation.self.hand.length >= 2, "real opening hand should be visible");
     assert(!Object.hasOwn(mulliganState.observation.opponent, "hand"), "server must omit opponent hand objects");
     const privateOpponentIds = (mulliganState.observation.opponent.hand || []).map((card) => card.card_id);
@@ -287,6 +288,10 @@ async function main() {
     let state = await stateFromPage(page);
     assert.equal(state.observation.phase, "MAIN");
     assert.equal(await page.locator("#pending-choice").evaluate((node) => node.hidden), true);
+    for (const type of ["PLAY_CARD", "ATTACK", "USE_HERO_POWER"]) {
+      const expected = new Set(state.legal_actions.filter((action) => action.type === type).map((action) => action.source_entity_id)).size;
+      assert.equal(await page.locator(`[data-testid="quick-action"][data-action-type="${type}"]`).count(), expected, `${type}: one visible button per legal source`);
+    }
     await assertNoHorizontalOverflow(page, "desktop at MAIN");
     const thinDecisionRects = await page.locator("#decision-panel").evaluate((rootNode) =>
       [...rootNode.querySelectorAll("*")].map((node) => {
@@ -320,7 +325,7 @@ async function main() {
     assert(boar, "Stonetusk Boar should be on board");
     const attackTarget = state.observation.opponent.hero.entity_id;
     performed = await performAction(page, state, async () => {
-      await page.locator(`[data-testid="self-board"] [data-entity-id="${boar.entity_id}"].sourceable`).click();
+      await page.locator(`[data-testid="quick-action"][data-action-type="ATTACK"][data-source-id="${boar.entity_id}"]`).click();
       await page.locator(`[data-testid="opponent-hero"] .targetable[data-entity-id="${attackTarget}"]`).click();
     }, "Charge attack");
     assert.equal(performed.action.type, "ATTACK");
@@ -332,6 +337,7 @@ async function main() {
     assert.equal(performed.action.type, "PLAY_CARD");
     actions.push(performed.action);
     await waitForPhase(page, "选择");
+    assert.equal(await page.locator('[data-testid="quick-action"]').count(), 0, "MAIN buttons should not appear during Discover");
 
     state = await stateFromPage(page);
     assert(state.legal_actions.every((action) => action.type === "CHOOSE"));
@@ -345,7 +351,7 @@ async function main() {
     state = await stateFromPage(page);
     const powerTarget = state.observation.opponent.hero.entity_id;
     performed = await performAction(page, state, async () => {
-      await page.locator('[data-testid="hero-power"] .sourceable[data-entity-id]').click();
+      await page.locator('[data-testid="quick-action"][data-action-type="USE_HERO_POWER"]').click();
       await page.locator(`[data-testid="opponent-hero"] .targetable[data-entity-id="${powerTarget}"]`).click();
     }, "targeted Hero Power");
     assert.equal(performed.action.type, "USE_HERO_POWER");
@@ -370,6 +376,7 @@ async function main() {
     await page.locator('[data-testid="game-over"]').waitFor({ state: "visible", timeout });
     state = await stateFromPage(page);
     assert.equal(state.observation.phase, "GAME_OVER");
+    assert.equal(await page.locator('[data-testid="quick-action"]').count(), 0, "MAIN buttons should not appear after Game Over");
     assert(state.outcome && state.outcome.winner);
     assert.deepEqual(new Set(actions.map((action) => action.type)), new Set([
       "PLAY_CARD", "ATTACK", "CHOOSE", "USE_HERO_POWER",
