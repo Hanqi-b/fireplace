@@ -1,1 +1,7 @@
 include fireplace/cards/CardDefs.xml
+include fireplace/web_gui/index.html
+include fireplace/web_gui/action_model.js
+include fireplace/web_gui/app.js
+include fireplace/web_gui/style.css
+include card_assets/placeholder.png
+include card_assets/SOURCES.md

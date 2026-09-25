@@ -10,10 +10,12 @@ looked up by the request handler.
 from __future__ import annotations
 
 import copy
+import ipaddress
 import json
-import mimetypes
 import threading
+import uuid
 from collections.abc import Mapping
+from concurrent.futures import TimeoutError as FutureTimeout
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -23,6 +25,7 @@ from urllib.parse import unquote, urlsplit
 from ..agent_api import Action
 from ..controller import ActionError, GameSession, decision_player
 from ..exceptions import GameOver
+from .assets import AssetService
 
 try:  # Optional parallel asset package.  The UI works without it.
     from card_assets import AssetResolver as _AssetResolver
@@ -31,9 +34,11 @@ except Exception:  # pragma: no cover - import depends on an optional package
 
 
 _ASSET_KINDS = frozenset({"render", "art", "tile"})
+_ASSET_PENDING = object()
 _STATIC_MIME_TYPES = {
     "index.html": "text/html; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
+    "action_model.js": "text/javascript; charset=utf-8",
     "style.css": "text/css; charset=utf-8",
 }
 _MAX_REQUEST_BYTES = 1 << 20
@@ -64,20 +69,22 @@ def _player_name(player: object) -> str | None:
     return str(value)
 
 
-def _outcome(game: object) -> dict[str, str | None] | None:
+def _outcome(game: object, human: object) -> dict[str, str | bool | None] | None:
     """Return the deliberately small terminal result projection."""
 
     if not _game_ended(game):
         return None
 
     winner = None
+    human_won = False
     for player in getattr(game, "players", ()):
         state = getattr(player, "playstate", None)
         state_name = getattr(state, "name", state)
         if str(state_name).upper() == "WON":
             winner = _player_name(player)
+            human_won = player is human
             break
-    return {"winner": winner}
+    return {"winner": winner, "human_won": human_won if winner else None}
 
 
 def _description_value(description: object, name: str) -> Any:
@@ -89,7 +96,7 @@ def _description_value(description: object, name: str) -> Any:
     return str(value)
 
 
-def _decorate_visible_cards(value: object, resolver: object) -> None:
+def _decorate_visible_cards(value: object, descriptions: Mapping[str, object]) -> None:
     """Enrich visible observation card mappings with optional card text.
 
     ``Observation`` has already removed hidden opponent card identities.  This
@@ -100,10 +107,7 @@ def _decorate_visible_cards(value: object, resolver: object) -> None:
     if isinstance(value, dict):
         card_id = value.get("card_id")
         if isinstance(card_id, str) and card_id:
-            try:
-                description = resolver.describe(card_id)
-            except Exception:
-                description = None
+            description = descriptions.get(card_id)
             if description is not None:
                 name = _description_value(description, "name")
                 text = _description_value(description, "text")
@@ -115,10 +119,10 @@ def _decorate_visible_cards(value: object, resolver: object) -> None:
                 if locale:
                     value["locale"] = str(locale)
         for child in value.values():
-            _decorate_visible_cards(child, resolver)
+            _decorate_visible_cards(child, descriptions)
     elif isinstance(value, list):
         for child in value:
-            _decorate_visible_cards(child, resolver)
+            _decorate_visible_cards(child, descriptions)
 
 
 def _visible_card_ids(value: object) -> set[str]:
@@ -138,6 +142,32 @@ def _visible_card_ids(value: object) -> set[str]:
                 visit(child)
 
     visit(value)
+    return result
+
+
+def _visible_entity_names(observation: Mapping[str, Any]) -> dict[int, str]:
+    """Index names that this viewer could see before a decision.
+
+    Event text must never be derived from the opponent's private action log or
+    from engine entities.  In particular an opponent's hand card is absent
+    from this observation until the engine exposes it publicly.
+    """
+
+    result: dict[int, str] = {}
+
+    def visit(item: object) -> None:
+        if isinstance(item, Mapping):
+            entity_id = item.get("entity_id")
+            name = item.get("name")
+            if type(entity_id) is int and isinstance(name, str) and name:
+                result[entity_id] = name
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, (list, tuple)):
+            for child in item:
+                visit(child)
+
+    visit(observation)
     return result
 
 
@@ -171,10 +201,14 @@ class WebGame:
         self.opponent_agent = opponent_agent
         self._lock = threading.RLock()
         self._revision = 0
+        self._session_id = str(uuid.uuid4())
         self._started = False
+        self._events: list[dict[str, Any]] = []
+        self._event_seq = 0
         self.asset_resolver = (
             asset_resolver if asset_resolver is not None else self._load_resolver()
         )
+        self.assets = AssetService(resolver=self.asset_resolver)
         self.start()
 
     @staticmethod
@@ -196,6 +230,11 @@ class WebGame:
     def revision(self) -> int:
         with self._lock:
             return self._revision
+
+    def close(self) -> None:
+        """Release optional asset workers when the local server closes."""
+
+        self.assets.close()
 
     def start(self) -> dict[str, Any]:
         """Start the session once and advance the AI to the human decision."""
@@ -222,16 +261,70 @@ class WebGame:
         # also keeps optional resolver enrichment isolated from a test double
         # that might reuse its mapping.
         observation = copy.deepcopy(observation)
-        if self.asset_resolver is not None:
-            _decorate_visible_cards(observation, self.asset_resolver)
+        descriptions = self.assets.describe_visible(_visible_card_ids(observation))
+        if descriptions:
+            _decorate_visible_cards(observation, descriptions)
 
         _decision, actions = self._decision_actions_locked()
         return {
+            "session_id": self._session_id,
             "revision": self._revision,
             "observation": observation,
             "legal_actions": [action.to_dict() for action in actions],
-            "outcome": _outcome(self.session.game),
+            "outcome": _outcome(self.session.game, self.human),
+            "events": copy.deepcopy(self._events),
         }
+
+    def _public_event_locked(
+        self, player: object, action: Action, observation: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Project an accepted action into a small, privacy-filtered log row."""
+
+        actor = "self" if player is self.human else "opponent"
+        names = _visible_entity_names(observation)
+        event: dict[str, Any] = {
+            "seq": self._event_seq + 1,
+            "turn": observation.get("turn"),
+            "actor": actor,
+            "type": action.type,
+        }
+        # A card in the opponent's hand and a pending opponent choice are
+        # private.  Only a human-owned card, or an already public attacker or
+        # hero power, may have its source name shown here.
+        if actor == "self" or action.type in ("ATTACK", "USE_HERO_POWER"):
+            source = names.get(action.source_entity_id)
+            if source:
+                event["source_name"] = source
+                event["source_entity_id"] = action.source_entity_id
+        if action.type in ("PLAY_CARD", "ATTACK", "USE_HERO_POWER"):
+            target = names.get(action.target_entity_id)
+            if target:
+                event["target_name"] = target
+                event["target_entity_id"] = action.target_entity_id
+        if actor == "self" and action.type == "PLAY_CARD" and action.position is not None:
+            event["position"] = action.position
+        if actor == "self" and action.type == "CHOOSE":
+            choice = names.get(action.choice_entity_id)
+            if choice:
+                event["source_name"] = choice
+        return event
+
+    def _append_event_locked(self, event: dict[str, Any]) -> None:
+        self._event_seq += 1
+        self._events.append(event)
+
+    def _reveal_played_public_card_locked(
+        self, event: dict[str, Any], action: Action
+    ) -> None:
+        """Name an opponent play only if that entity became publicly visible."""
+
+        if event["actor"] != "opponent" or action.type != "PLAY_CARD":
+            return
+        names = _visible_entity_names(self.session.observation(self.human))
+        name = names.get(action.source_entity_id)
+        if name:
+            event["source_name"] = name
+            event["source_entity_id"] = action.source_entity_id
 
     def snapshot(self) -> dict[str, Any]:
         """Return the current browser payload as ordinary JSON-safe values."""
@@ -266,13 +359,20 @@ class WebGame:
                     raise RuntimeError("Opponent returned an invalid action") from exc
             if not isinstance(action, Action) or action not in actions:
                 raise RuntimeError("Opponent returned an unavailable action")
+            event = self._public_event_locked(
+                player, action, self.session.observation(self.human)
+            )
             try:
                 self.session.execute(player, action)
             except GameOver:
+                self._reveal_played_public_card_locked(event, action)
+                self._append_event_locked(event)
                 self._revision += 1
                 return
             except ActionError as exc:
                 raise RuntimeError("Opponent action was rejected: %s" % exc) from exc
+            self._reveal_played_public_card_locked(event, action)
+            self._append_event_locked(event)
             self._revision += 1
 
     def handle_action(self, payload: object) -> dict[str, Any]:
@@ -286,6 +386,10 @@ class WebGame:
             current = self._snapshot_locked()
             if not isinstance(payload, Mapping):
                 raise WebActionError("request body must be a JSON object", 400, current)
+
+            if payload.get("session_id") != self._session_id:
+                current["error"] = "stale session"
+                raise WebActionError(current["error"], 409, current)
 
             revision = payload.get("revision")
             if type(revision) is not int:
@@ -310,11 +414,15 @@ class WebGame:
                 current["error"] = "action is unavailable or stale"
                 raise WebActionError(current["error"], 409, current)
 
+            event = self._public_event_locked(
+                self.human, action, current["observation"]
+            )
             try:
                 self.session.execute(self.human, action)
             except GameOver:
                 # GameSession has already applied and logged the accepted
                 # action before raising its terminal signal.
+                self._append_event_locked(event)
                 self._revision += 1
                 return self._snapshot_locked()
             except ActionError as exc:
@@ -322,11 +430,12 @@ class WebGame:
                 current["error"] = str(exc)
                 raise WebActionError(str(exc), 409, current) from exc
 
+            self._append_event_locked(event)
             self._revision += 1
             self._advance_ai_locked()
             return self._snapshot_locked()
 
-    def asset(self, kind: str, card_id: str) -> tuple[bytes, str] | None:
+    def asset(self, kind: str, card_id: str) -> tuple[bytes, str] | object | None:
         """Resolve one visible card asset to bytes and a content type.
 
         Unknown card ids, unsupported kinds, unavailable resolvers and resolver
@@ -338,29 +447,21 @@ class WebGame:
         if kind not in _ASSET_KINDS or not isinstance(card_id, str):
             return None
         with self._lock:
-            if card_id not in _visible_card_ids(self._snapshot_locked()["observation"]):
+            if card_id not in _visible_card_ids(self.session.observation(self.human)):
                 return None
-            resolver = self.asset_resolver
-            if resolver is None:
-                return None
-            try:
-                resolved = resolver.resolve(card_id, kind=kind)
-            except Exception:
-                return None
-            path_value = _field(resolved, "path")
-            if not path_value:
-                return None
-            try:
-                path = Path(path_value).expanduser().resolve()
-                if not path.is_file():
-                    return None
-                data = path.read_bytes()
-            except (OSError, RuntimeError, TypeError, ValueError):
-                return None
-            media_type = _field(resolved, "media_type")
-            if not isinstance(media_type, str) or not media_type:
-                media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-            return data, media_type
+        # A cache miss may download an image for up to two locale timeouts.
+        # Respond immediately so image requests cannot monopolize the
+        # browser's per-origin connections and delay player actions.
+        future = self.assets.request_asset(card_id, kind)
+        try:
+            asset = future.result(timeout=0.05)
+        except FutureTimeout:
+            return _ASSET_PENDING
+        except Exception:
+            return None
+        if asset is None:
+            return None
+        return asset.data, asset.media_type
 
 
 class WebGameHTTPServer(ThreadingHTTPServer):
@@ -370,8 +471,14 @@ class WebGameHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
     def __init__(self, server_address: tuple[str, int], web_game: WebGame):
+        if server_address[0] not in {"127.0.0.1", "localhost"}:
+            raise ValueError("web GUI must bind to loopback")
         self.web_game = web_game
         super().__init__(server_address, _RequestHandler)
+
+    def server_close(self) -> None:
+        super().server_close()
+        self.web_game.close()
 
 
 def _json_bytes(payload: object) -> bytes:
@@ -417,7 +524,11 @@ class _RequestHandler(BaseHTTPRequestHandler):
         return host if host in allowed else None
 
     def _reject_untrusted_request(self) -> bool:
-        if self._local_host() is not None:
+        try:
+            local_peer = ipaddress.ip_address(self.client_address[0]).is_loopback
+        except ValueError:
+            local_peer = False
+        if local_peer and self._local_host() is not None:
             return False
         self._send_json(int(HTTPStatus.FORBIDDEN), {"error": "local host required"})
         return True
@@ -433,7 +544,7 @@ class _RequestHandler(BaseHTTPRequestHandler):
         if path == "/":
             self._serve_static("index.html")
             return
-        if path in {"/app.js", "/style.css"}:
+        if path in {"/app.js", "/action_model.js", "/style.css"}:
             self._serve_static(path[1:])
             return
         if path.startswith("/assets/"):
@@ -444,6 +555,11 @@ class _RequestHandler(BaseHTTPRequestHandler):
                 # Card ids in the asset contract are a single URL segment.
                 if "/" not in card_id and "\\" not in card_id:
                     asset = self.web_game.asset(kind, card_id)
+                    if asset is _ASSET_PENDING:
+                        self._send_bytes(
+                            int(HTTPStatus.ACCEPTED), b"", "application/octet-stream"
+                        )
+                        return
                     if asset is not None:
                         self._send_bytes(int(HTTPStatus.OK), asset[0], asset[1])
                         return

@@ -1,7 +1,9 @@
 """End-to-end checks for the local browser decision boundary."""
 
 import json
+import io
 import threading
+import time
 from http.client import HTTPConnection
 from types import SimpleNamespace
 from urllib.error import HTTPError
@@ -11,12 +13,16 @@ from urllib.request import Request, urlopen
 import pytest
 from hearthstone.enums import CardClass
 
+import card_assets
+from card_assets import AssetResolver
 from fireplace import cards
-from fireplace.agents import RandomAgent
+from fireplace.agents import HeuristicAgent, RandomAgent
+from fireplace.agent_api import Action
 from fireplace.controller import GameSession
 from fireplace.game import Game
 from fireplace.player import Player
 from fireplace.web_gui import server as web_server
+from fireplace.web_gui.factory import build_game
 from fireplace.web_gui.server import WebGame, make_server
 
 
@@ -27,12 +33,14 @@ cards.db.initialize()
 def web_game():
     servers = []
 
-    def create(*, hero=CardClass.MAGE.default_hero, seed=3, asset_resolver=None, deck_size=10):
+    def create(*, hero=CardClass.MAGE.default_hero, seed=3, asset_resolver=None,
+               deck_size=10, opponent_policy="random"):
         human = Player("Human", ["CS2_231"] * deck_size, hero)
         opponent = Player("Computer", ["CS2_231"] * deck_size, hero)
         game = Game((human, opponent), seed=seed)
         app = WebGame(
-            GameSession(game, {}), human, RandomAgent(seed=seed),
+            GameSession(game, {}), human,
+            HeuristicAgent() if opponent_policy == "heuristic" else RandomAgent(seed=seed),
             asset_resolver=asset_resolver,
         )
         server = make_server(app, host="127.0.0.1", port=0)
@@ -66,8 +74,22 @@ def request(base, path="/api/state", payload=None, headers=None):
 
 def submit(base, state, action):
     return request(
-        base, "/api/action", {"revision": state["revision"], "action": action}
+        base, "/api/action", {"session_id": state["session_id"], "revision": state["revision"], "action": action}
     )
+
+
+def wait_asset(base, path, timeout=10):
+    deadline = time.monotonic() + timeout
+    while True:
+        with urlopen(base + path, timeout=timeout) as response:
+            status = response.status
+            media_type = response.headers.get("Content-Type")
+            data = response.read()
+        if status != 202:
+            return status, media_type, data
+        if time.monotonic() >= deadline:
+            raise AssertionError("asset never became ready")
+        time.sleep(0.05)
 
 
 def action(state, kind, **fields):
@@ -156,8 +178,75 @@ def test_mulligan_ai_advance_and_stale_action(web_game):
     status, stale = submit(base, initial, action(initial, "MULLIGAN", mulligan_entity_ids=[]))
     assert status == 409 and stale["revision"] == current["revision"]
     assert stale["error"]
-    status, malformed = request(base, "/api/action", {"revision": current["revision"], "action": {"type": "END_TURN"}})
+    status, malformed = request(base, "/api/action", {"session_id": current["session_id"], "revision": current["revision"], "action": {"type": "END_TURN"}})
     assert status == 400 and malformed["revision"] == current["revision"]
+
+
+def test_old_browser_session_rejected_even_at_matching_revision(web_game):
+    _app, _human, _opponent, base = web_game()
+    _, current = request(base)
+    payload = {
+        "session_id": "previous-server-session",
+        "revision": current["revision"],
+        "action": action(current, "MULLIGAN", mulligan_entity_ids=[]),
+    }
+    status, rejected = request(base, "/api/action", payload)
+    assert status == 409
+    assert rejected["session_id"] == current["session_id"]
+    assert rejected["revision"] == current["revision"]
+    _, unchanged = request(base)
+    assert unchanged["revision"] == current["revision"]
+
+
+def test_public_events_hide_opponent_private_decisions(web_game):
+    app, human, opponent, base = web_game()
+    state = ready(base)
+    events = state["events"]
+    assert events
+    assert [event["seq"] for event in events] == sorted(event["seq"] for event in events)
+    for event in events:
+        assert set(event) <= {
+            "seq", "turn", "actor", "type", "source_name", "target_name",
+            "source_entity_id", "target_entity_id", "position",
+        }
+        if event["actor"] == "opponent" and event["type"] in {"MULLIGAN", "CHOOSE"}:
+            assert "source_name" not in event
+            assert "source_entity_id" not in event
+    assert not any("mulligan_entity_ids" in event for event in events)
+    assert "hand" not in state["observation"]["opponent"]
+
+    status, next_state = submit(base, state, action(state, "END_TURN"))
+    assert status == 200
+    assert next_state["events"][-1]["seq"] > events[-1]["seq"]
+    assert next_state["events"][-1]["actor"] in {"self", "opponent"}
+
+
+def test_opponent_secret_stays_hidden_in_snapshot_log_and_assets(web_game):
+    app, human, opponent, base = web_game()
+    state = ready(base)
+    secret = opponent.give("EX1_287")
+    opponent.max_mana = 10
+
+    class SecretAgent:
+        def choose_action(self, observation, actions):
+            play = next((item for item in actions if item.type == "PLAY_CARD"
+                         and item.source_entity_id == secret.entity_id), None)
+            return play or next(item for item in actions if item.type == "END_TURN")
+
+    app.opponent_agent = SecretAgent()
+    status, state = submit(base, state, action(state, "END_TURN"))
+    assert status == 200
+    assert state["observation"]["opponent"]["secrets_count"] == 1
+    assert "secrets" not in state["observation"]["opponent"]
+    assert "EX1_287" not in json.dumps(state)
+    hidden_play = next(
+        event for event in state["events"]
+        if event["actor"] == "opponent" and event["type"] == "PLAY_CARD"
+    )
+    assert "source_name" not in hidden_play
+    assert "source_entity_id" not in hidden_play
+    status, missing = request(base, "/assets/render/EX1_287")
+    assert status == 404
 
 
 def test_cross_origin_and_non_json_actions_are_rejected(web_game):
@@ -168,13 +257,19 @@ def test_cross_origin_and_non_json_actions_are_rejected(web_game):
     assert response.status == 403 and json.loads(response.read())["error"]
     connection.close()
     _, state = request(base)
-    payload = {"revision": state["revision"], "action": action(state, "MULLIGAN", mulligan_entity_ids=[])}
+    payload = {"session_id": state["session_id"], "revision": state["revision"], "action": action(state, "MULLIGAN", mulligan_entity_ids=[])}
     status, rejected = request(base, "/api/action", payload, {"Origin": "http://attacker.example"})
     assert status == 403 and rejected["revision"] == state["revision"]
     status, rejected = request(base, "/api/action", payload, {"Content-Type": "text/plain"})
     assert status == 415 and rejected["revision"] == state["revision"]
     status, accepted = request(base, "/api/action", payload, {"Origin": base})
     assert status == 200 and accepted["revision"] > state["revision"]
+
+
+def test_server_refuses_nonlocal_bind(web_game):
+    app, human, opponent, base = web_game()
+    with pytest.raises(ValueError, match="loopback"):
+        make_server(app, host="0.0.0.0", port=0)
 
 
 def test_optional_local_asset_contract_rejects_hidden_cards(web_game, tmp_path):
@@ -191,16 +286,88 @@ def test_optional_local_asset_contract_rejects_hidden_cards(web_game, tmp_path):
     app, human, opponent, base = web_game(asset_resolver=Resolver())
     ready(base)
     opponent.give("CS2_029")
-    status, state = request(base)
-    assert status == 200
-    visible = state["observation"]["self"]["hand"][0]
+    deadline = time.monotonic() + 5
+    while True:
+        status, state = request(base)
+        assert status == 200
+        visible = state["observation"]["self"]["hand"][0]
+        if visible["name"].startswith("Local ") or time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
     assert visible["name"].startswith("Local ")
     assert visible["text"] == "Local text"
-    with urlopen(base + "/assets/render/" + visible["card_id"], timeout=10) as response:
-        assert response.headers["Content-Type"] == "image/png"
-        assert response.read() == b"local-image"
+    status, media_type, data = wait_asset(base, "/assets/render/" + visible["card_id"])
+    assert status == 200 and media_type == "image/png" and data == b"local-image"
     status, _ = request(base, "/assets/render/CS2_029")
     assert status == 404
+
+
+def test_real_resolver_chinese_text_and_external_cached_image(web_game, tmp_path, monkeypatch):
+    image = card_assets.PLACEHOLDER_PATH.read_bytes()
+    requested = []
+
+    def opener(url, *, timeout):
+        requested.append(url)
+        return io.BytesIO(image)
+
+    monkeypatch.setattr(card_assets, "URL_OPENER", opener)
+    cache_dir = tmp_path / "outside-repository-cache"
+    resolver = AssetResolver(cache_dir=cache_dir)
+    _, human, opponent, base = web_game(asset_resolver=resolver)
+    deadline = time.monotonic() + 5
+    while True:
+        status, state = request(base)
+        assert status == 200
+        own_card = state["observation"]["self"]["hand"][0]
+        if own_card["name"] == "小精灵" or time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
+    assert own_card["card_id"] == "CS2_231"
+    assert own_card["name"] == "小精灵"
+    status, media_type, data = wait_asset(base, "/assets/render/CS2_231")
+    assert status == 200 and media_type == "image/png" and data == image
+    assert requested and "/zhCN/" in requested[0]
+    assert any(cache_dir.iterdir())
+
+
+def test_cold_image_request_does_not_block_state_or_decision(web_game, tmp_path):
+    image = tmp_path / "card.png"
+    image.write_bytes(card_assets.PLACEHOLDER_PATH.read_bytes())
+    resolving = threading.Event()
+    release = threading.Event()
+
+    class SlowResolver:
+        def describe(self, card_id):
+            return None
+
+        def resolve(self, card_id, *, kind):
+            resolving.set()
+            assert release.wait(timeout=10)
+            return SimpleNamespace(
+                path=image, media_type="image/png", locale="zhCN", is_placeholder=False
+            )
+
+    _, human, opponent, base = web_game(asset_resolver=SlowResolver())
+    state = ready(base)
+    card_id = state["observation"]["self"]["hand"][0]["card_id"]
+    with urlopen(base + "/assets/render/" + card_id, timeout=3) as response:
+        assert response.status == 202
+        assert response.read() == b""
+    try:
+        assert resolving.wait(timeout=3)
+        with urlopen(base + "/api/state", timeout=3) as response:
+            assert json.load(response)["revision"] == state["revision"]
+        payload = {"session_id": state["session_id"], "revision": state["revision"], "action": action(state, "END_TURN")}
+        req = Request(
+            base + "/api/action", data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urlopen(req, timeout=3) as response:
+            assert json.load(response)["revision"] > state["revision"]
+    finally:
+        release.set()
+    status, media_type, data = wait_asset(base, "/assets/render/" + card_id)
+    assert status == 200 and data == image.read_bytes()
 
 
 def test_discover_target_position_and_hero_power(web_game):
@@ -251,6 +418,7 @@ def test_discover_target_position_and_hero_power(web_game):
 def test_terminal_action_returns_outcome(web_game):
     app, human, opponent, base = web_game()
     state = ready(base)
+    human.name = "Alice"
     human.max_mana = 10
     opponent.hero.damage = opponent.hero.max_health - 1
     fireball = human.give("CS2_029")
@@ -269,10 +437,12 @@ def test_terminal_action_returns_outcome(web_game):
     assert state["observation"]["phase"] == "GAME_OVER"
     assert state["legal_actions"] == []
     assert state["outcome"] is not None
+    assert state["outcome"] == {"winner": "Alice", "human_won": True}
 
 
-def test_complete_match_through_http_actions(web_game):
-    app, human, opponent, base = web_game(deck_size=5)
+@pytest.mark.parametrize("opponent_policy", ["random", "heuristic"])
+def test_complete_match_through_http_actions(web_game, opponent_policy):
+    app, human, opponent, base = web_game(deck_size=5, opponent_policy=opponent_policy)
     status, state = request(base)
     assert status == 200
     seen = set()
@@ -293,3 +463,33 @@ def test_complete_match_through_http_actions(web_game):
     assert state["observation"]["phase"] == "GAME_OVER"
     assert {"MULLIGAN", "MAIN"} <= seen
     assert state["legal_actions"] == []
+
+
+@pytest.mark.parametrize("opponent_policy", ["random", "heuristic"])
+def test_real_draft_reaches_game_over_through_value_actions(monkeypatch, opponent_policy):
+    monkeypatch.setattr(web_server, "_AssetResolver", None)
+    game, human, opponent = build_game(seed=2, opponent_name=opponent_policy)
+    ai = HeuristicAgent() if opponent_policy == "heuristic" else RandomAgent(seed=2)
+    human_agent = HeuristicAgent()
+    app = WebGame(GameSession(game, {}), human, ai)
+    try:
+        state = app.snapshot()
+        seen = set()
+        for _ in range(500):
+            if state["outcome"] is not None:
+                break
+            seen.add(state["observation"]["phase"])
+            actions = [Action.from_dict(item) for item in state["legal_actions"]]
+            assert actions
+            chosen = human_agent.choose_action(state["observation"], actions)
+            assert chosen in actions
+            state = app.handle_action(
+                {"session_id": state["session_id"], "revision": state["revision"], "action": chosen.to_dict()}
+            )
+        assert state["outcome"] is not None
+        assert state["observation"]["phase"] == "GAME_OVER"
+        assert {"MULLIGAN", "MAIN", "CHOICE"} <= seen
+        assert len(state["events"]) == len(app.session.action_log.to_dict()["actions"])
+        assert len(state["events"]) > 40
+    finally:
+        app.close()

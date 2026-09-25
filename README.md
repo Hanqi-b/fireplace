@@ -58,20 +58,37 @@ source of documentation, along with the actual code.
 
 ### Local browser game
 
-From a source checkout with Fireplace's Python dependencies installed, start a
-single-player game against the random opponent:
+Install the package with `pip install .`, then start a single-player game:
 
 ```bash
-python3 examples/play_web.py --seed 7
+fireplace-web --seed 7
 ```
 
 Open [http://127.0.0.1:8765/](http://127.0.0.1:8765/) on the same computer.
-Use `--opponent heuristic` for the rule-based opponent, or `--port` to choose
-another local port. The server binds to `127.0.0.1` and keeps one game in
-memory; restarting it begins a new game. The page shows the current legal
-decisions, including mulligan, Discover, targets, and minion positions. It
-falls back to text and CSS card placeholders when the optional `card_assets`
-package is unavailable. Press Ctrl+C in the terminal to stop the server.
+The equivalent source-checkout command is `python3 examples/play_web.py --seed 7`;
+`python3 -m fireplace.web_gui` also works. Use `--opponent heuristic` for the
+rule-based opponent or `--port 8766` to choose another port. The server binds
+to `127.0.0.1` and keeps one game in memory; restarting it begins a new game.
+Press Ctrl+C in the terminal to stop the server.
+
+The browser receives only the human player's Observation, current legal Action
+values and a filtered public event log. Click cards, characters and offered
+choices to play through Mulligan, the main phase, Discover and Game Over. A
+stale action refreshes the page's game state and must be selected again.
+Localized card text comes from `CardDefs.xml`. Card images are fetched by the
+local server and cached outside the repository in
+`$XDG_CACHE_HOME/card_assets` (or `~/.cache/card_assets`). A missing image or
+unavailable asset package falls back to a CSS card placeholder. The browser
+does not request external card-image URLs. The first uncached image may take
+time to arrive; gameplay remains responsive while it loads.
+
+For browser acceptance testing, install Node.js, Playwright and Chrome, then
+run `node tests/web_gui_browser_smoke.cjs` from the repository root. Set
+`FIREPLACE_GUI_PYTHON` to the Python interpreter with Fireplace installed and
+`CHROME_PATH` if Chrome is not at `/opt/google/chrome/chrome`. The script plays
+a deterministic real-engine match through the GUI, including a stale action,
+and writes desktop, narrow-window and Game Over screenshots under
+`/tmp/fireplace-web-gui-artifacts` by default.
 
 ### Terminal game
 
