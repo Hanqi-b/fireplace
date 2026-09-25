@@ -56,6 +56,25 @@ source of documentation, along with the actual code.
 
 ## Human game and decision log
 
+### Local browser game
+
+From a source checkout with Fireplace's Python dependencies installed, start a
+single-player game against the random opponent:
+
+```bash
+python3 examples/play_web.py --seed 7
+```
+
+Open [http://127.0.0.1:8765/](http://127.0.0.1:8765/) on the same computer.
+Use `--opponent heuristic` for the rule-based opponent, or `--port` to choose
+another local port. The server binds to `127.0.0.1` and keeps one game in
+memory; restarting it begins a new game. The page shows the current legal
+decisions, including mulligan, Discover, targets, and minion positions. It
+falls back to text and CSS card placeholders when the optional `card_assets`
+package is unavailable. Press Ctrl+C in the terminal to stop the server.
+
+### Terminal game
+
 Run a terminal game against the random agent from a source checkout:
 
 ```bash

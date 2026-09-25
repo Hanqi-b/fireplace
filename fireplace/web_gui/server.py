@@ -406,7 +406,25 @@ class _RequestHandler(BaseHTTPRequestHandler):
     def _not_found(self) -> None:
         self._send_json(int(HTTPStatus.NOT_FOUND), {"error": "not found"})
 
+    def _local_host(self) -> str | None:
+        """Reject DNS rebinding names before serving private game state."""
+
+        host = self.headers.get("Host", "").lower()
+        port = self.server.server_port
+        allowed = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        if port == 80:
+            allowed.update({"127.0.0.1", "localhost"})
+        return host if host in allowed else None
+
+    def _reject_untrusted_request(self) -> bool:
+        if self._local_host() is not None:
+            return False
+        self._send_json(int(HTTPStatus.FORBIDDEN), {"error": "local host required"})
+        return True
+
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
+        if self._reject_untrusted_request():
+            return
         parsed = urlsplit(self.path)
         path = parsed.path
         if path == "/api/state":
@@ -447,8 +465,24 @@ class _RequestHandler(BaseHTTPRequestHandler):
         self._send_bytes(int(HTTPStatus.OK), data, _STATIC_MIME_TYPES[name])
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
+        if self._reject_untrusted_request():
+            return
         if urlsplit(self.path).path != "/api/action":
             self._not_found()
+            return
+        origin = self.headers.get("Origin")
+        if origin is not None and origin != "http://" + self._local_host():
+            self._send_json(
+                int(HTTPStatus.FORBIDDEN),
+                self.web_game.error_payload("cross-origin action rejected"),
+            )
+            return
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            self._send_json(
+                int(HTTPStatus.UNSUPPORTED_MEDIA_TYPE),
+                self.web_game.error_payload("JSON content type required"),
+            )
             return
         raw_length = self.headers.get("Content-Length")
         try:

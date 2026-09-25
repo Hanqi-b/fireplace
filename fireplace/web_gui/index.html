@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Fireplace — local game</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <main class="game-shell" id="game" aria-labelledby="page-title">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">FIREPLACE / LOCAL MATCH</p>
+          <h1 id="page-title">Card battle</h1>
+        </div>
+        <div class="match-status" aria-live="polite">
+          <span class="status-pill" id="phase-value">Loading</span>
+          <span class="turn-label" id="turn-value">Turn —</span>
+          <span class="turn-label" id="active-seat-value">Active seat —</span>
+          <span class="revision-label" id="revision-value">Revision —</span>
+        </div>
+      </header>
+
+      <div class="notice" id="notice" role="status" aria-live="polite" hidden></div>
+
+      <section class="table" aria-label="Battlefield">
+        <article class="player-panel opponent-panel" id="opponent-panel" aria-labelledby="opponent-title">
+          <div class="player-heading">
+            <div>
+              <p class="eyebrow">OPPONENT</p>
+              <h2 id="opponent-title">Opponent</h2>
+            </div>
+            <div class="player-resources">
+              <div class="mana" id="opponent-mana-value" aria-label="Opponent mana">— / — mana</div>
+              <div class="hand-count" id="opponent-hand-count" aria-label="Opponent hand count">— cards</div>
+            </div>
+          </div>
+          <div class="opponent-hand" id="opponent-hand" aria-label="Opponent hand"></div>
+          <div class="hero-row" id="opponent-hero-row"></div>
+          <div class="board-heading">
+            <h3>Board</h3>
+            <span class="muted" id="opponent-board-count"></span>
+          </div>
+          <div class="board" id="opponent-board" aria-label="Opponent board"></div>
+        </article>
+
+        <div class="center-divider" aria-hidden="true">
+          <span>VS</span>
+        </div>
+
+        <article class="player-panel self-panel" id="self-panel" aria-labelledby="self-title">
+          <div class="player-heading">
+            <div>
+              <p class="eyebrow">YOU</p>
+              <h2 id="self-title">Player</h2>
+            </div>
+            <div class="mana" id="mana-value" aria-label="Mana">— / — mana</div>
+          </div>
+          <div class="hero-row" id="self-hero-row"></div>
+          <div class="board-heading">
+            <h3>Board</h3>
+            <span class="muted" id="self-board-count"></span>
+          </div>
+          <div class="board" id="self-board" aria-label="Your board"></div>
+          <div class="power-row" id="hero-power-row"></div>
+        </article>
+      </section>
+
+      <section class="hand-section panel" aria-labelledby="hand-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">PRIVATE</p>
+            <h2 id="hand-title">Your hand</h2>
+          </div>
+          <span class="muted" id="deck-count"></span>
+        </div>
+        <div class="hand" id="hand" aria-label="Your hand"></div>
+      </section>
+
+      <section class="actions-section panel" aria-labelledby="actions-title">
+        <div class="section-heading actions-heading">
+          <div>
+            <p class="eyebrow">DECISION</p>
+            <h2 id="actions-title">Available actions</h2>
+          </div>
+          <span class="muted" id="action-count"></span>
+        </div>
+        <p class="instructions" id="action-instructions">
+          Choose one of the currently legal actions. The server checks the revision and action value before applying it.
+        </p>
+        <div class="pending-choice" id="pending-choice" hidden></div>
+        <div class="action-groups" id="action-menu" aria-live="polite"></div>
+      </section>
+
+      <footer class="footer">
+        <span>Local HTTP session</span>
+        <span id="connection-value">Connecting…</span>
+      </footer>
+    </main>
+  </body>
+</html>
