@@ -171,9 +171,9 @@ async function handCard(page, state, cardId, occurrence = 0) {
 
 async function clickPositionedMinion(page, cardId, position, label) {
   const before = await stateFromPage(page);
-  const { card } = await handCard(page, before, cardId);
+  const { card, locator } = await handCard(page, before, cardId);
   const result = await performAction(page, before, async () => {
-    await page.locator(`[data-testid="quick-action"][data-action-type="PLAY_CARD"][data-source-id="${card.entity_id}"]`).click();
+    await locator.click();
     const button = page.locator(`#position-choices button[data-position="${position}"]`);
     await button.waitFor({ state: "visible", timeout: Math.min(timeout, 2500) });
     await button.click();
@@ -186,10 +186,10 @@ async function clickPositionedMinion(page, cardId, position, label) {
 
 async function clickTargetedHandCard(page, cardId, label) {
   const before = await stateFromPage(page);
-  const { card } = await handCard(page, before, cardId);
+  const { card, locator } = await handCard(page, before, cardId);
   const targetId = before.observation.opponent.hero.entity_id;
   const result = await performAction(page, before, async () => {
-    await page.locator(`[data-testid="quick-action"][data-action-type="PLAY_CARD"][data-source-id="${card.entity_id}"]`).click();
+    await locator.click();
     await page.locator("#target-hint").waitFor({ state: "visible", timeout });
     await page.locator(`[data-testid="opponent-hero"] .targetable[data-entity-id="${targetId}"]`).click();
   }, label);
@@ -204,6 +204,11 @@ async function assertNoHorizontalOverflow(page, label) {
     viewport: window.innerWidth,
     document: document.documentElement.scrollWidth,
     body: document.body.scrollWidth,
+    offenders: [...document.querySelectorAll("body *")].map((node) => ({
+      name: node.id || node.className?.baseVal || node.className || node.tagName,
+      left: Math.round(node.getBoundingClientRect().left),
+      right: Math.round(node.getBoundingClientRect().right),
+    })).filter((item) => item.right > window.innerWidth + 1 || item.left < -1).slice(0, 12),
   }));
   assert(metrics.document <= metrics.viewport, `${label}: document overflows horizontally: ${JSON.stringify(metrics)}`);
   return metrics;
@@ -244,14 +249,29 @@ async function main() {
       mulliganState.observation.opponent.hand_count,
       "opponent hand should render backs using only the public count",
     );
+    await page.screenshot({ path: path.join(artifacts, "web-gui-mulligan.png"), fullPage: true });
+    const missingAssetPage = await context.newPage();
+    await missingAssetPage.route("**/assets/**", (route) => route.fulfill({
+      status: 404, contentType: "application/json", body: '{"error":"missing"}',
+    }));
+    await missingAssetPage.goto(endpoint.url, { waitUntil: "domcontentloaded" });
+    await waitForPhase(missingAssetPage, "换牌");
+    await missingAssetPage.locator('[data-testid="hand-card"] .asset-placeholder').first().waitFor({ state: "visible", timeout });
+    assert((await missingAssetPage.locator('[data-testid="hand-card"] .card-content').first().innerText()).trim(), "CSS placeholder must retain the card name");
+    await missingAssetPage.close();
     const initialRevisionText = await page.locator('[data-testid="revision"]').innerText();
     await page.locator('[data-testid="hand-card"] [data-testid="card-inspect"]').first().click();
     await page.locator("#card-modal").waitFor({ state: "visible", timeout });
     assert((await page.locator("#modal-card-name").innerText()).trim());
     await page.locator("#modal-close").click();
     await page.locator("#card-modal").waitFor({ state: "hidden", timeout });
+    await page.locator('[data-testid="hand-card"] [data-testid="card-inspect"]').first().focus();
+    await page.keyboard.press("Enter");
+    await page.locator("#card-modal").waitFor({ state: "visible", timeout });
+    await page.locator("#modal-close").click();
+    await page.locator("#card-modal").waitFor({ state: "hidden", timeout });
     assert.equal(await page.locator('[data-testid="revision"]').innerText(), initialRevisionText);
-    assert.equal(seenActions.length, 0, "inspecting a card must not submit a game action");
+    assert.equal(seenActions.length, 0, "mouse and keyboard inspection must not submit a game action");
 
     // A second page keeps the old snapshot so a real stale click can exercise
     // the server's 409 + refreshed-snapshot path without a synthetic POST.
@@ -292,6 +312,13 @@ async function main() {
       const expected = new Set(state.legal_actions.filter((action) => action.type === type).map((action) => action.source_entity_id)).size;
       assert.equal(await page.locator(`[data-testid="quick-action"][data-action-type="${type}"]`).count(), expected, `${type}: one visible button per legal source`);
     }
+    const backupPosition = await page.evaluate(() => ({
+      boardBottom: document.querySelector(".table").getBoundingClientRect().bottom,
+      quickTop: document.querySelector("#quick-actions").getBoundingClientRect().top,
+      fallbackTop: document.querySelector("#action-fallback").getBoundingClientRect().top,
+    }));
+    assert(backupPosition.quickTop >= backupPosition.boardBottom - 1, `quick actions should be below the board: ${JSON.stringify(backupPosition)}`);
+    assert(backupPosition.fallbackTop >= backupPosition.boardBottom - 1, `raw actions should be below the board: ${JSON.stringify(backupPosition)}`);
     await assertNoHorizontalOverflow(page, "desktop at MAIN");
     const thinDecisionRects = await page.locator("#decision-panel").evaluate((rootNode) =>
       [...rootNode.querySelectorAll("*")].map((node) => {
@@ -308,10 +335,22 @@ async function main() {
     );
     await page.screenshot({ path: path.join(artifacts, "web-gui-desktop.png"), fullPage: true });
 
+    for (const viewport of [{ width: 1280, height: 720 }, { width: 1680, height: 928 }]) {
+      await page.setViewportSize(viewport);
+      await assertNoHorizontalOverflow(page, `${viewport.width}x${viewport.height} at MAIN`);
+      assert(await page.locator('[data-testid="hero-power"] .power-card').isVisible(), "hero power remains visible");
+    }
+
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForTimeout(150);
     const mobileMetrics = await assertNoHorizontalOverflow(page, "mobile at MAIN");
     await page.screenshot({ path: path.join(artifacts, "web-gui-mobile.png"), fullPage: true });
+    await page.locator('[data-testid="hand-card"] [data-testid="card-inspect"]').first().click();
+    await page.locator("#card-modal").waitFor({ state: "visible", timeout });
+    const mobileCardDetail = await page.locator("#card-modal .card-modal-dialog").boundingBox();
+    assert(mobileCardDetail && mobileCardDetail.width <= 390,
+      "narrow-screen inspect must reveal a complete card without horizontal clipping");
+    await page.locator("#modal-close").click();
     await page.setViewportSize({ width: 1440, height: 1000 });
 
     const actions = [];
@@ -325,8 +364,11 @@ async function main() {
     assert(boar, "Stonetusk Boar should be on board");
     const attackTarget = state.observation.opponent.hero.entity_id;
     performed = await performAction(page, state, async () => {
-      await page.locator(`[data-testid="quick-action"][data-action-type="ATTACK"][data-source-id="${boar.entity_id}"]`).click();
-      await page.locator(`[data-testid="opponent-hero"] .targetable[data-entity-id="${attackTarget}"]`).click();
+      await page.locator(`[data-testid="self-board"] .board-card[data-entity-id="${boar.entity_id}"]`).click();
+      const target = page.locator(`[data-testid="opponent-hero"] .targetable[data-entity-id="${attackTarget}"]`);
+      await target.hover();
+      assert.equal(await page.locator(".attack-line").evaluate((node) => node.hidden), false, "attack line should track the legal target");
+      await target.click();
     }, "Charge attack");
     assert.equal(performed.action.type, "ATTACK");
     assert.equal(performed.action.source_entity_id, boar.entity_id);
@@ -338,6 +380,7 @@ async function main() {
     actions.push(performed.action);
     await waitForPhase(page, "选择");
     assert.equal(await page.locator('[data-testid="quick-action"]').count(), 0, "MAIN buttons should not appear during Discover");
+    await page.screenshot({ path: path.join(artifacts, "web-gui-discover.png"), fullPage: true });
 
     state = await stateFromPage(page);
     assert(state.legal_actions.every((action) => action.type === "CHOOSE"));
@@ -351,7 +394,7 @@ async function main() {
     state = await stateFromPage(page);
     const powerTarget = state.observation.opponent.hero.entity_id;
     performed = await performAction(page, state, async () => {
-      await page.locator('[data-testid="quick-action"][data-action-type="USE_HERO_POWER"]').click();
+      await page.locator('[data-testid="hero-power"] .power-card').click();
       await page.locator(`[data-testid="opponent-hero"] .targetable[data-entity-id="${powerTarget}"]`).click();
     }, "targeted Hero Power");
     assert.equal(performed.action.type, "USE_HERO_POWER");
@@ -429,6 +472,67 @@ async function main() {
     await mockPage.locator("#game-over-dismiss").click();
     await mockPage.locator('[data-testid="game-over"]').waitFor({ state: "hidden", timeout });
     await mockPage.screenshot({ path: path.join(artifacts, "web-gui-mocked-extras.png"), fullPage: true });
+
+    // Near board capacity, every legal insertion slot must remain reachable
+    // on a narrow screen.  Mock only the JSON boundary, then inspect and
+    // click the same raw Action the regular UI would send.
+    const crowded = JSON.parse(JSON.stringify(mulliganState));
+    crowded.revision += 200;
+    crowded.observation.phase = "MAIN";
+    crowded.observation.self.mana = 10;
+    crowded.observation.self.max_mana = 10;
+    crowded.observation.self.board = Array.from({ length: 6 }, (_, index) => ({
+      ...mulliganState.observation.self.hand[0], entity_id: 91000 + index,
+      atk: 1, health: 1, max_health: 1, can_attack: false,
+    }));
+    crowded.observation.self.hand = [{
+      ...mulliganState.observation.self.hand[0], entity_id: 91020,
+    }];
+    crowded.legal_actions = Array.from({ length: 7 }, (_, position) => ({
+      schema_version: 1, type: "PLAY_CARD", source_entity_id: 91020, position,
+    }));
+    crowded.outcome = null;
+    crowded.events = [];
+    let crowdedPost = null;
+    const crowdedPage = await context.newPage();
+    await crowdedPage.setViewportSize({ width: 390, height: 844 });
+    await crowdedPage.route("**/assets/**", (route) => route.fulfill({ status: 404, body: "" }));
+    await crowdedPage.route("**/api/state", (route) => route.fulfill({
+      status: 200, contentType: "application/json; charset=utf-8", body: JSON.stringify(crowded),
+    }));
+    await crowdedPage.route("**/api/action", (route) => {
+      crowdedPost = route.request().postDataJSON();
+      const after = JSON.parse(JSON.stringify(crowded));
+      after.revision += 1;
+      after.observation.self.board.push(after.observation.self.hand.pop());
+      after.legal_actions = [];
+      route.fulfill({ status: 200, contentType: "application/json; charset=utf-8", body: JSON.stringify(after) });
+    });
+    await crowdedPage.goto(endpoint.url, { waitUntil: "domcontentloaded" });
+    await waitForPhase(crowdedPage, "主阶段");
+    await crowdedPage.locator('[data-testid="hand-card"][data-entity-id="91020"]').click();
+    assert.equal(await crowdedPage.locator("#self-board .board-slot").count(), 7);
+    for (let position = 0; position <= 6; position += 1) {
+      const slot = crowdedPage.locator(`#self-board .board-slot[data-position="${position}"]`);
+      await slot.scrollIntoViewIfNeeded();
+      const reachable = await slot.evaluate((node) => {
+        const rect = node.getBoundingClientRect();
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+        const hit = document.elementFromPoint(x, y);
+        return {
+          ok: x >= 0 && x <= innerWidth && hit && (hit === node || node.contains(hit)),
+          x, y, width: rect.width, height: rect.height,
+          hit: hit && (hit.id || hit.className || hit.tagName),
+          scrollLeft: node.parentElement.scrollLeft,
+        };
+      });
+      assert(reachable.ok, `mobile insertion slot ${position} is not clickable: ${JSON.stringify(reachable)}`);
+    }
+    await crowdedPage.screenshot({ path: path.join(artifacts, "web-gui-mobile-crowded-board.png"), fullPage: true });
+    await crowdedPage.locator('#self-board .board-slot[data-position="6"]').click();
+    assert(crowdedPost && sameAction(crowdedPost.action, crowded.legal_actions[6]), "last mobile slot must submit its original legal Action");
+    await crowdedPage.close();
 
     console.log(JSON.stringify({
       result: "PASS",

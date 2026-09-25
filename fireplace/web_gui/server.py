@@ -40,6 +40,7 @@ _STATIC_MIME_TYPES = {
     "app.js": "text/javascript; charset=utf-8",
     "action_model.js": "text/javascript; charset=utf-8",
     "style.css": "text/css; charset=utf-8",
+    "board-scene.webp": "image/webp",
 }
 _MAX_REQUEST_BYTES = 1 << 20
 
@@ -435,7 +436,7 @@ class WebGame:
             self._advance_ai_locked()
             return self._snapshot_locked()
 
-    def asset(self, kind: str, card_id: str) -> tuple[bytes, str] | object | None:
+    def asset(self, kind: str, card_id: str) -> tuple[bytes, str, bool] | object | None:
         """Resolve one visible card asset to bytes and a content type.
 
         Unknown card ids, unsupported kinds, unavailable resolvers and resolver
@@ -461,7 +462,7 @@ class WebGame:
             return None
         if asset is None:
             return None
-        return asset.data, asset.media_type
+        return asset.data, asset.media_type, asset.is_placeholder
 
 
 class WebGameHTTPServer(ThreadingHTTPServer):
@@ -494,11 +495,16 @@ class _RequestHandler(BaseHTTPRequestHandler):
     def web_game(self) -> WebGame:
         return self.server.web_game  # type: ignore[attr-defined]
 
-    def _send_bytes(self, status: int, data: bytes, content_type: str) -> None:
+    def _send_bytes(
+        self, status: int, data: bytes, content_type: str,
+        *, placeholder: bool | None = None,
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        if placeholder is not None:
+            self.send_header("X-Asset-Placeholder", "1" if placeholder else "0")
         self.end_headers()
         self.wfile.write(data)
 
@@ -544,7 +550,7 @@ class _RequestHandler(BaseHTTPRequestHandler):
         if path == "/":
             self._serve_static("index.html")
             return
-        if path in {"/app.js", "/action_model.js", "/style.css"}:
+        if path in {"/app.js", "/action_model.js", "/style.css", "/board-scene.webp"}:
             self._serve_static(path[1:])
             return
         if path.startswith("/assets/"):
@@ -561,7 +567,10 @@ class _RequestHandler(BaseHTTPRequestHandler):
                         )
                         return
                     if asset is not None:
-                        self._send_bytes(int(HTTPStatus.OK), asset[0], asset[1])
+                        self._send_bytes(
+                            int(HTTPStatus.OK), asset[0], asset[1],
+                            placeholder=asset[2],
+                        )
                         return
             self._not_found()
             return

@@ -75,8 +75,17 @@ The browser receives only the human player's Observation, current legal Action
 values and a filtered public event log. Click cards, characters and offered
 choices to play through Mulligan, the main phase, Discover and Game Over. A
 stale action refreshes the page's game state and must be selected again.
+The battlefield shows both hero portraits and minion rows, with a larger hand
+along its lower edge. Click a playable card, attacker or hero power, then choose
+any highlighted target, branch or minion slot. On desktop, hover or focus a
+card to enlarge it. On narrow screens, use its inspect button for full card
+details while the hand remains scrollable. The public match log,
+convenience action buttons and a complete legal-action fallback are below the
+battlefield, so they do not cover play. The narrow layout keeps the hand in a
+horizontal strip. The scene is a local static image; no gameplay information is
+embedded in it.
 Localized card text comes from `CardDefs.xml`. Card images are fetched by the
-local server and cached outside the repository in
+local server as renders, art or tiles and cached outside the repository in
 `$XDG_CACHE_HOME/card_assets` (or `~/.cache/card_assets`). A missing image or
 unavailable asset package falls back to a CSS card placeholder. The browser
 does not request external card-image URLs. The first uncached image may take
@@ -89,6 +98,9 @@ run `node tests/web_gui_browser_smoke.cjs` from the repository root. Set
 a deterministic real-engine match through the GUI, including a stale action,
 and writes desktop, narrow-window and Game Over screenshots under
 `/tmp/fireplace-web-gui-artifacts` by default.
+Run `node tests/web_gui_full_match.cjs` with the same environment variables to
+play complete browser matches against both Random and Heuristic opponents,
+using battlefield clicks and the end-turn button across multiple turns.
 
 ### Terminal game
 

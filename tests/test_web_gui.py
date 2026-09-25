@@ -160,6 +160,10 @@ def test_real_snapshot_hides_opponent_hand_and_uses_placeholder(web_game, monkey
         assert b"opponent-mana-value" in html
     with urlopen(base + "/style.css", timeout=10) as response:
         assert b"placeholder" in response.read().lower()
+    with urlopen(base + "/board-scene.webp", timeout=10) as response:
+        assert response.status == 200
+        assert response.headers.get_content_type() == "image/webp"
+        assert response.read(4) == b"RIFF"
     status, missing = request(base, "/assets/render/CS2_231")
     assert status == 404 and missing["error"]
 
@@ -300,6 +304,34 @@ def test_optional_local_asset_contract_rejects_hidden_cards(web_game, tmp_path):
     assert status == 200 and media_type == "image/png" and data == b"local-image"
     status, _ = request(base, "/assets/render/CS2_029")
     assert status == 404
+
+
+def test_asset_response_marks_resolver_placeholder(web_game, tmp_path):
+    image = tmp_path / "placeholder.png"
+    image.write_bytes(card_assets.PLACEHOLDER_PATH.read_bytes())
+
+    class PlaceholderResolver:
+        def describe(self, card_id):
+            return None
+
+        def resolve(self, card_id, *, kind):
+            return SimpleNamespace(
+                path=image, media_type="image/png", locale=None,
+                is_placeholder=True,
+            )
+
+    _, _, _, base = web_game(asset_resolver=PlaceholderResolver())
+    deadline = time.monotonic() + 5
+    while True:
+        with urlopen(base + "/assets/art/CS2_231", timeout=5) as response:
+            status = response.status
+            placeholder = response.headers.get("X-Asset-Placeholder")
+            response.read()
+        if status == 200:
+            assert placeholder == "1"
+            break
+        assert status == 202 and time.monotonic() < deadline
+        time.sleep(0.05)
 
 
 def test_real_resolver_chinese_text_and_external_cached_image(web_game, tmp_path, monkeypatch):

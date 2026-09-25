@@ -5,16 +5,14 @@
   var API_ACTION = "/api/action";
   var Model = window.FireplaceActionModel;
   var elements = {};
-  var snapshot = null;
-  var actionIndex = Model.index([]);
+  var guiState = createGuiState(Model);
   var busy = false;
   var noticeTimer = null;
   var pollTimer = null;
-  var lastFingerprint = "";
-  var latestEventSeq = null;
-  var selection = emptySelection();
   var assetRequests = new Map();
-  var outcomeDismissedRevision = null;
+  var attackPointer = null;
+  var attackLine = null;
+  var attackStroke = null;
 
   window.addEventListener("beforeunload", function () {
     assetRequests.forEach(function (entry) {
@@ -41,6 +39,133 @@
       targetId: null,
       position: null,
       mulliganIds: [],
+    };
+  }
+
+  /*
+   * Snapshot and selection state stays independent from the DOM renderer.  The
+   * store only normalizes the server boundary, indexes the original legal
+   * Action objects, and reconciles an in-progress selection when a newer
+   * snapshot arrives.  Rendering and network feedback consume the transition
+   * returned by commit() without changing Action construction.
+   */
+  function createGuiState(model) {
+    var current = {
+      snapshot: null,
+      actionIndex: model.index([]),
+      selection: emptySelection(),
+      fingerprint: "",
+      latestEventSeq: null,
+      outcomeDismissedRevision: null,
+    };
+
+    function isDecisionChanged(next) {
+      return !current.snapshot ||
+        next.session_id !== current.snapshot.session_id ||
+        next.revision !== current.snapshot.revision;
+    }
+
+    function isStale(next) {
+      return Boolean(current.snapshot &&
+        next.session_id === current.snapshot.session_id &&
+        next.revision < current.snapshot.revision);
+    }
+
+    function selectionCriteria(value) {
+      var criteria = {};
+      if (value.type) {
+        criteria.type = value.type;
+      }
+      if (value.sourceId !== null) {
+        criteria.source_entity_id = value.sourceId;
+      }
+      if (value.branchId !== null) {
+        criteria.choose_option_entity_id = value.branchId;
+      }
+      if (value.targetId !== null) {
+        criteria.target_entity_id = value.targetId;
+      }
+      if (value.position !== null) {
+        criteria.position = value.position;
+      }
+      return criteria;
+    }
+
+    function hasSelection(value) {
+      return Boolean(value.type) || value.sourceId !== null ||
+        value.branchId !== null || value.targetId !== null ||
+        value.position !== null || value.mulliganIds.length > 0;
+    }
+
+    function selectionIsValid(value, indexed) {
+      if (!hasSelection(value)) {
+        return true;
+      }
+      if (value.type === "MULLIGAN" || value.mulliganIds.length) {
+        return Boolean(model.findMulligan(indexed, value.mulliganIds));
+      }
+      return model.filter(indexed.actions, selectionCriteria(value)).length > 0;
+    }
+
+    function cloneSelection(value) {
+      var next = value || emptySelection();
+      return {
+        type: next.type || null,
+        sourceId: next.sourceId === undefined ? null : next.sourceId,
+        branchId: next.branchId === undefined ? null : next.branchId,
+        targetId: next.targetId === undefined ? null : next.targetId,
+        position: next.position === undefined ? null : next.position,
+        mulliganIds: asArray(next.mulliganIds).slice(),
+      };
+    }
+
+    return {
+      current: current,
+      isDecisionChanged: isDecisionChanged,
+      isStale: isStale,
+      selectedActions: function () {
+        return model.filter(current.actionIndex.actions, selectionCriteria(current.selection));
+      },
+      resetSelection: function () {
+        current.selection = emptySelection();
+        return current.selection;
+      },
+      commit: function (next, options) {
+        var previous = current.snapshot;
+        var previousEventSeq = current.latestEventSeq;
+        var sessionChanged = Boolean(previous && previous.session_id !== next.session_id);
+        var resetSelection = Boolean(options && options.resetSelection) || sessionChanged || isDecisionChanged(next);
+        var indexed = model.index(next.legal_actions);
+        if (resetSelection || !selectionIsValid(current.selection, indexed)) {
+          current.selection = emptySelection();
+          resetSelection = true;
+        } else {
+          current.selection = cloneSelection(current.selection);
+        }
+        current.snapshot = next;
+        current.actionIndex = indexed;
+        current.fingerprint = snapshotFingerprint(next);
+        var events = asArray(next.events);
+        var newest = events.length ? events[events.length - 1] : null;
+        var newestSeq = safeNumber(newest && newest.seq, previousEventSeq);
+        if (sessionChanged) {
+          current.latestEventSeq = null;
+          current.outcomeDismissedRevision = null;
+          previousEventSeq = null;
+        }
+        if (events.length) {
+          current.latestEventSeq = newestSeq;
+        }
+        return {
+          previous: previous,
+          previousEventSeq: previousEventSeq,
+          newest: newest,
+          newestSeq: newestSeq,
+          events: events,
+          resetSelection: resetSelection,
+          sessionChanged: sessionChanged,
+        };
+      },
     };
   }
 
@@ -71,6 +196,7 @@
       "hand",
       "deck-count",
       "action-count",
+      "decision-panel",
       "action-instructions",
       "selection-summary",
       "quick-actions",
@@ -99,12 +225,14 @@
       elements[id] = getElement(id);
     });
 
+    initAttackLine();
+
     elements["action-submit"].addEventListener("click", submitSelected);
     elements["selection-cancel"].addEventListener("click", cancelSelection);
     elements["end-turn-button"].addEventListener("click", submitEndTurn);
     elements["modal-close"].addEventListener("click", closeCardModal);
     elements["game-over-dismiss"].addEventListener("click", function () {
-      outcomeDismissedRevision = snapshot ? snapshot.revision : null;
+      guiState.current.outcomeDismissedRevision = guiState.current.snapshot ? guiState.current.snapshot.revision : null;
       setHidden(elements["game-over"], true);
     });
     elements["card-modal"].addEventListener("click", function (event) {
@@ -116,7 +244,7 @@
       if (event.key === "Escape") {
         if (!elements["card-modal"].hidden) {
           closeCardModal();
-        } else if (selection.type || selection.sourceId !== null) {
+        } else if (guiState.current.selection.type || guiState.current.selection.sourceId !== null) {
           cancelSelection();
         }
       }
@@ -296,18 +424,18 @@
         if (!next) {
           throw new Error("状态响应缺少对局快照。");
         }
-        if (snapshot && next.session_id === snapshot.session_id && next.revision < snapshot.revision) {
-          return snapshot;
+        if (guiState.isStale(next)) {
+          return guiState.current.snapshot;
         }
-        applySnapshot(next, { resetSelection: !snapshot || next.session_id !== snapshot.session_id || next.revision !== snapshot.revision });
+        applySnapshot(next, { resetSelection: guiState.isDecisionChanged(next) });
         setConnection("已连接", false);
         return next;
       })
       .catch(function (error) {
         setConnection("连接断开", true);
-        if (!silent || !snapshot) {
+        if (!silent || !guiState.current.snapshot) {
           showNotice("无法读取本机对局：" + errorMessage(error), "error", 0);
-          if (!snapshot) {
+          if (!guiState.current.snapshot) {
             renderEmptyState();
           }
         }
@@ -326,15 +454,16 @@
         if (!next) {
           return;
         }
-        if (snapshot && next.session_id === snapshot.session_id && next.revision < snapshot.revision) {
+        if (guiState.isStale(next)) {
           return;
         }
         setConnection("已连接", false);
         var fingerprint = snapshotFingerprint(next);
-        if (fingerprint !== lastFingerprint) {
-          var decisionChanged = !snapshot || next.session_id !== snapshot.session_id || next.revision !== snapshot.revision;
+        if (fingerprint !== guiState.current.fingerprint) {
+          var hadSnapshot = Boolean(guiState.current.snapshot);
+          var decisionChanged = guiState.isDecisionChanged(next);
           applySnapshot(next, { resetSelection: decisionChanged });
-          if (decisionChanged && snapshot && !busy) {
+          if (decisionChanged && hadSnapshot && !busy) {
             showNotice("对局状态已更新，请重新选择当前合法操作。", "", 3200);
           }
         }
@@ -345,13 +474,11 @@
   }
 
   function applySnapshot(next, options) {
-    var previous = snapshot;
-    var previousEventSeq = latestEventSeq;
-    if (previous && previous.session_id !== next.session_id) {
+    var transition = guiState.commit(next, options);
+    var previous = transition.previous;
+    var previousEventSeq = transition.previousEventSeq;
+    if (transition.sessionChanged) {
       previous = null;
-      previousEventSeq = null;
-      latestEventSeq = null;
-      outcomeDismissedRevision = null;
       assetRequests.forEach(function (entry) {
         entry.cancelled = true;
         if (entry.objectUrl) {
@@ -360,31 +487,43 @@
       });
       assetRequests.clear();
     }
-    var resetSelection = Boolean(options && options.resetSelection);
+    var resetSelection = transition.resetSelection;
     var focusId = null;
     var focusEntityId = null;
+    var focusInspectEntityId = null;
+    var focusPosition = null;
+    var focusActionKey = null;
     if (!resetSelection && document.activeElement) {
-      focusId = document.activeElement.id || null;
-      focusEntityId = document.activeElement.getAttribute && document.activeElement.getAttribute("data-entity-id");
+      var active = document.activeElement;
+      focusId = active.id || null;
+      focusEntityId = active.getAttribute && active.getAttribute("data-entity-id");
+      if (active.classList && active.classList.contains("card-inspect")) {
+        var card = active.closest("[data-entity-id]");
+        focusInspectEntityId = card && card.getAttribute("data-entity-id");
+      }
+      focusPosition = active.getAttribute && active.getAttribute("data-position");
+      focusActionKey = active.getAttribute && active.getAttribute("data-action-key");
     }
-    if (resetSelection) {
-      selection = emptySelection();
-    }
-    snapshot = next;
-    actionIndex = Model.index(next.legal_actions);
-    lastFingerprint = snapshotFingerprint(next);
-    var events = asArray(next.events);
-    var newest = events.length ? events[events.length - 1] : null;
-    var newestSeq = safeNumber(newest && newest.seq, previousEventSeq);
-    if (events.length) {
-      latestEventSeq = newestSeq;
-    }
+    var events = transition.events;
+    var newest = transition.newest;
+    var newestSeq = transition.newestSeq;
     renderSnapshot();
     showPublicFeedback(previous, next, previousEventSeq);
     if (!resetSelection) {
       var focusNode = focusId ? document.getElementById(focusId) : null;
       if (!focusNode && focusEntityId) {
         focusNode = document.querySelector('[data-entity-id="' + focusEntityId + '"]');
+      }
+      if (!focusNode && focusInspectEntityId) {
+        focusNode = document.querySelector('[data-entity-id="' + focusInspectEntityId + '"] .card-inspect');
+      }
+      if (!focusNode && focusPosition !== null) {
+        focusNode = Array.from(document.querySelectorAll("[data-position]"))
+          .find(function (node) { return node.getAttribute("data-position") === focusPosition; });
+      }
+      if (!focusNode && focusActionKey) {
+        focusNode = Array.from(document.querySelectorAll("[data-action-key]"))
+          .find(function (node) { return node.getAttribute("data-action-key") === focusActionKey; });
       }
       if (focusNode && typeof focusNode.focus === "function") {
         focusNode.focus();
@@ -428,6 +567,70 @@
       .map(getElement)
       .map(function (container) { return container && container.querySelector(selector); })
       .find(function (node) { return Boolean(node); }) || null;
+  }
+
+  function initAttackLine() {
+    var table = document.querySelector(".table");
+    if (!table) {
+      return;
+    }
+    attackLine = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    attackLine.classList.add("attack-line");
+    attackLine.setAttribute("aria-hidden", "true");
+    attackLine.hidden = true;
+    attackStroke = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    attackLine.appendChild(attackStroke);
+    table.appendChild(attackLine);
+    table.addEventListener("pointermove", function (event) {
+      var target = event.target instanceof Element ? event.target.closest(".targetable") : null;
+      attackPointer = {
+        clientX: event.clientX,
+        clientY: event.clientY,
+        target: target,
+      };
+      updateAttackLine();
+    });
+    table.addEventListener("pointerleave", function () {
+      attackPointer = null;
+      updateAttackLine();
+    });
+    window.addEventListener("resize", updateAttackLine);
+  }
+
+  function updateAttackLine() {
+    if (!attackLine || !attackStroke) {
+      return;
+    }
+    var selection = guiState.current.selection;
+    var source = selection.type === "ATTACK" && publicNode(selection.sourceId);
+    var table = document.querySelector(".table");
+    if (!source || !table || !attackPointer || !table.contains(source)) {
+      attackLine.hidden = true;
+      return;
+    }
+    var tableRect = table.getBoundingClientRect();
+    var sourceRect = source.getBoundingClientRect();
+    var target = attackPointer.target;
+    var targetId = target && entityId(target.getAttribute("data-entity-id"));
+    if (!target || !target.isConnected || !targetIds().has(targetId)) {
+      target = null;
+    }
+    var targetRect = target && target.getBoundingClientRect();
+    var x1 = sourceRect.left + sourceRect.width / 2 - tableRect.left;
+    var y1 = sourceRect.top + sourceRect.height / 2 - tableRect.top;
+    var x2 = targetRect
+      ? targetRect.left + targetRect.width / 2 - tableRect.left
+      : attackPointer.clientX - tableRect.left;
+    var y2 = targetRect
+      ? targetRect.top + targetRect.height / 2 - tableRect.top
+      : attackPointer.clientY - tableRect.top;
+    attackLine.setAttribute("viewBox", "0 0 " + String(tableRect.width) + " " + String(tableRect.height));
+    attackStroke.setAttribute("x1", String(x1));
+    attackStroke.setAttribute("y1", String(y1));
+    attackStroke.setAttribute("x2", String(x2));
+    attackStroke.setAttribute("y2", String(y2));
+    attackLine.classList.toggle("snapped", Boolean(target));
+    attackLine.hidden = false;
   }
 
   function transientClass(node, className) {
@@ -477,6 +680,7 @@
     clear(elements["self-board"]);
     clear(elements["opponent-board"]);
     clear(elements["self-hero-row"]);
+    elements["self-hero-row"].closest(".self-panel").classList.remove("promote-interaction");
     clear(elements["opponent-hero-row"]);
     clear(elements["self-extras"]);
     clear(elements["opponent-extras"]);
@@ -485,9 +689,12 @@
     clear(elements["hero-power-row"]);
     clear(elements["event-log"]);
     renderDecision();
+    updateAttackLine();
   }
 
   function renderSnapshot() {
+    var snapshot = guiState.current.snapshot;
+    var actionIndex = guiState.current.actionIndex;
     var observation = isObject(snapshot.observation) ? snapshot.observation : {};
     var self = isObject(observation.self) ? observation.self : {};
     var opponent = isObject(observation.opponent) ? observation.opponent : {};
@@ -519,6 +726,7 @@
     renderActions();
     renderLog(snapshot.events);
     renderOutcome(snapshot.outcome, phase);
+    updateAttackLine();
   }
 
   function phaseLabel(phase) {
@@ -555,6 +763,7 @@
 
   function entityLabels() {
     var labels = new Map();
+    var snapshot = guiState.current.snapshot;
     if (!snapshot || !isObject(snapshot.observation)) {
       return labels;
     }
@@ -596,6 +805,10 @@
 
   function renderHero(container, hero, own, power) {
     clear(container);
+    container.classList.remove("promote-interaction");
+    if (own) {
+      container.closest(".self-panel").classList.remove("promote-interaction");
+    }
     if (!isObject(hero)) {
       var empty = document.createElement("p");
       empty.className = "muted";
@@ -606,6 +819,10 @@
     var id = entityId(hero.entity_id);
     var target = targetIds().has(id);
     var sourceTypes = sourceTypesFor(id);
+    container.classList.toggle("promote-interaction", own && (target || sourceTypes.length > 0));
+    if (own && (target || sourceTypes.length > 0)) {
+      container.closest(".self-panel").classList.add("promote-interaction");
+    }
     var wrapper = createEntityCard(hero, "hero-card " + (target ? "targetable " : "") + (sourceTypes.length ? "sourceable" : ""), function () {
       if (target && chooseTarget(id)) {
         return;
@@ -615,7 +832,7 @@
       }
     });
     wrapper.classList.add(own ? "own-hero" : "enemy-hero");
-    var art = createCardArt(hero, "render");
+    var art = createCardArt(hero, "art");
     wrapper.appendChild(art);
     var copy = document.createElement("div");
     copy.className = "hero-copy";
@@ -676,6 +893,7 @@
   function renderBoard(container, board, own) {
     clear(container);
     var cards = asArray(board);
+    var selection = guiState.current.selection;
     var positions = own && selection.sourceId !== null && selection.type === "PLAY_CARD"
       ? Model.uniqueValues(selectedActions(), "position").slice().sort(function (left, right) { return left - right; })
       : [];
@@ -695,7 +913,7 @@
         }
       });
       wrapper.setAttribute("data-entity-id", String(id === null ? "" : id));
-      wrapper.appendChild(createCardArt(card, "render"));
+      wrapper.appendChild(createCardArt(card, "art"));
       var content = document.createElement("div");
       content.className = "card-content";
       content.appendChild(cardTitle(card));
@@ -733,7 +951,7 @@
         chooseSource(sourceTypes[0], id);
       }
     });
-    wrapper.appendChild(createCardArt(power, "render"));
+    wrapper.appendChild(createCardArt(power, "art"));
     var copy = document.createElement("div");
     copy.className = "power-copy";
     copy.appendChild(cardTitle(power, "技能："));
@@ -749,6 +967,7 @@
 
   function renderHand(hand, phase) {
     clear(elements["hand"]);
+    var selection = guiState.current.selection;
     asArray(hand).forEach(function (card) {
       var id = entityId(card && card.entity_id);
       var sourceTypes = phase === "MAIN" ? sourceTypesFor(id) : [];
@@ -795,7 +1014,7 @@
         onSelect();
       });
       wrapper.addEventListener("keydown", function (event) {
-        if (event.key === "Enter" || event.key === " ") {
+        if (event.target === wrapper && (event.key === "Enter" || event.key === " ")) {
           event.preventDefault();
           onSelect();
         }
@@ -824,7 +1043,8 @@
       image.alt = cardName(card) + " 卡图";
       image.loading = "lazy";
       image.hidden = true;
-
+      var preferredKind = kind || "render";
+      var imageRank = -1;
       image.addEventListener("load", function () {
         art.classList.remove("asset-placeholder");
       });
@@ -833,16 +1053,44 @@
         art.classList.add("asset-placeholder");
       });
       art.appendChild(image);
-      requestAsset(kind || "render", String(cardId)).then(function (objectUrl) {
-        if (objectUrl && image.isConnected) {
-          image.src = objectUrl;
+      function offerAsset(assetKind, result) {
+        if (!result || !result.url || !image.isConnected) {
+          return;
+        }
+        var rank = assetKind === preferredKind ? 2 : 1;
+        if (rank > imageRank) {
+          imageRank = rank;
+          art.classList.remove("asset-kind-render", "asset-kind-art", "asset-kind-tile");
+          art.classList.add("asset-kind-" + assetKind);
+          image.src = result.url;
           image.hidden = false;
         }
-      });
+      }
+      function loadKind(assetKind, remainingRetries) {
+        requestAsset(assetKind, String(cardId)).then(function (result) {
+          if (result && result.url) {
+            offerAsset(assetKind, result);
+          } else if (remainingRetries > 0 && art.isConnected) {
+            // A transient 404 or offline placeholder should not make this
+            // visible card permanently blank for the rest of the match.
+            window.setTimeout(function () {
+              if (art.isConnected) {
+                loadKind(assetKind, remainingRetries - 1);
+              }
+            }, 16000);
+          }
+        });
+      }
+      if (preferredKind !== "render") {
+        // A cached full render gives an immediate offline fallback while the
+        // cropped illustration is fetched.  Neither URL leaves this server.
+        loadKind("render", 2);
+      }
+      loadKind(preferredKind, 2);
     }
     var mark = document.createElement("span");
     mark.className = "asset-mark";
-    mark.textContent = cardId ? "" : "?";
+    mark.textContent = cardId ? "✦" : "?";
     art.appendChild(mark);
     return art;
   }
@@ -856,10 +1104,15 @@
   function requestAsset(kind, cardId) {
     var key = kind + "|" + cardId;
     var existing = assetRequests.get(key);
-    if (existing) {
+    if (existing && (!existing.expiresAt || Date.now() < existing.expiresAt)) {
       return existing.promise;
     }
-    var entry = { objectUrl: null, promise: null, cancelled: false };
+    assetRequests.delete(key);
+    var entry = { objectUrl: null, promise: null, cancelled: false, expiresAt: 0 };
+    function retryLater() {
+      entry.expiresAt = Date.now() + 15000;
+      return null;
+    }
     var assetUrl = "/assets/" + encodeURIComponent(kind) + "/" + encodeURIComponent(cardId);
     entry.promise = (async function () {
       var networkErrors = 0;
@@ -879,21 +1132,24 @@
             continue;
           }
           if (!response.ok) {
-            return null;
+            return retryLater();
+          }
+          if (response.headers.get("X-Asset-Placeholder") === "1") {
+            return retryLater();
           }
           var blob = await response.blob();
           if (entry.cancelled) {
             return null;
           }
           if (!blob.size || !blob.type.startsWith("image/")) {
-            return null;
+            return retryLater();
           }
           entry.objectUrl = URL.createObjectURL(blob);
-          return entry.objectUrl;
+          return { url: entry.objectUrl };
         } catch (error) {
           networkErrors += 1;
           if (networkErrors >= 10) {
-            return null;
+            return retryLater();
           }
           await delay(2000);
         }
@@ -986,12 +1242,14 @@
     if (sourceId === null) {
       return [];
     }
+    var actionIndex = guiState.current.actionIndex;
     return ["PLAY_CARD", "ATTACK", "USE_HERO_POWER"].filter(function (type) {
       return Model.sourceActions(actionIndex, type, sourceId).length > 0;
     });
   }
 
   function targetIds() {
+    var selection = guiState.current.selection;
     var ids = new Set();
     if (selection.sourceId === null) {
       return ids;
@@ -1006,30 +1264,14 @@
   }
 
   function selectedActions() {
-    var criteria = {};
-    if (selection.type) {
-      criteria.type = selection.type;
-    }
-    if (selection.sourceId !== null) {
-      criteria.source_entity_id = selection.sourceId;
-    }
-    if (selection.branchId !== null) {
-      criteria.choose_option_entity_id = selection.branchId;
-    }
-    if (selection.targetId !== null) {
-      criteria.target_entity_id = selection.targetId;
-    }
-    if (selection.position !== null) {
-      criteria.position = selection.position;
-    }
-    return Model.filter(actionIndex.actions, criteria);
+    return guiState.selectedActions();
   }
 
   function chooseSource(type, sourceId) {
-    if (busy || !snapshot) {
+    if (busy || !guiState.current.snapshot) {
       return;
     }
-    selection = emptySelection();
+    var selection = guiState.resetSelection();
     selection.type = type;
     selection.sourceId = sourceId;
     renderSnapshot();
@@ -1037,6 +1279,7 @@
   }
 
   function chooseBranch(branchId) {
+    var selection = guiState.current.selection;
     selection.branchId = branchId;
     selection.targetId = null;
     selection.position = null;
@@ -1045,6 +1288,7 @@
   }
 
   function chooseTarget(targetIdValue) {
+    var selection = guiState.current.selection;
     var id = entityId(targetIdValue);
     if (id === null || !targetIds().has(id)) {
       return false;
@@ -1059,7 +1303,7 @@
     if (!Model.uniqueValues(selectedActions(), "position").some(function (value) { return value === position; })) {
       return;
     }
-    selection.position = position;
+    guiState.current.selection.position = position;
     renderSnapshot();
     maybeSubmitSingle();
   }
@@ -1076,6 +1320,7 @@
   }
 
   function actionRequiresSelection(action) {
+    var selection = guiState.current.selection;
     return isObject(action) && (
       (action.choose_option_entity_id !== undefined && selection.branchId === null) ||
       (action.target_entity_id !== undefined && selection.targetId === null) ||
@@ -1084,9 +1329,10 @@
   }
 
   function toggleMulligan(id) {
-    if (id === null || !snapshot) {
+    if (id === null || !guiState.current.snapshot) {
       return;
     }
+    var selection = guiState.current.selection;
     var next = selection.mulliganIds.slice();
     var index = next.indexOf(id);
     if (index >= 0) {
@@ -1099,11 +1345,14 @@
   }
 
   function cancelSelection() {
-    selection = emptySelection();
+    guiState.resetSelection();
     renderSnapshot();
   }
 
   function submitSelected() {
+    var snapshot = guiState.current.snapshot;
+    var actionIndex = guiState.current.actionIndex;
+    var selection = guiState.current.selection;
     if (!snapshot || busy) {
       return;
     }
@@ -1125,12 +1374,14 @@
   }
 
   function submitEndTurn() {
+    var actionIndex = guiState.current.actionIndex;
     if (actionIndex.endTurn.length === 1) {
       submitRawAction(actionIndex.endTurn[0]);
     }
   }
 
   function actionIndexOf(action) {
+    var actionIndex = guiState.current.actionIndex;
     var direct = actionIndex.actions.indexOf(action);
     if (direct >= 0) {
       return direct;
@@ -1155,6 +1406,8 @@
   }
 
   function submitAction(index) {
+    var snapshot = guiState.current.snapshot;
+    var actionIndex = guiState.current.actionIndex;
     if (busy || !snapshot) {
       return;
     }
@@ -1181,12 +1434,14 @@
         if (!next) {
           throw new Error("动作响应缺少对局快照。");
         }
-        applySnapshot(next, { resetSelection: true });
+        if (!guiState.isStale(next)) {
+          applySnapshot(next, { resetSelection: true });
+        }
         setConnection("已连接", false);
       })
       .catch(function (error) {
         var next = error && error.payload ? snapshotFromPayload(error.payload) : null;
-        if (next) {
+        if (next && !guiState.isStale(next)) {
           applySnapshot(next, { resetSelection: true });
         }
         if (error && error.status === 409) {
@@ -1213,6 +1468,9 @@
   }
 
   function renderDecision() {
+    var snapshot = guiState.current.snapshot;
+    var actionIndex = guiState.current.actionIndex;
+    var selection = guiState.current.selection;
     clear(elements["quick-actions"]);
     setHidden(elements["quick-actions"], true);
     clear(elements["choice-options"]);
@@ -1220,11 +1478,14 @@
     clear(elements["pending-choice"]);
     setHidden(elements["pending-choice"], true);
     setHidden(elements["selection-summary"], true);
+    setHidden(elements["action-instructions"], false);
     setHidden(elements["target-hint"], true);
     setHidden(elements["action-submit"], true);
     setHidden(elements["selection-cancel"], true);
     setHidden(elements["end-turn-button"], true);
     var phase = snapshot && snapshot.observation ? safeText(snapshot.observation.phase, "") : "";
+    elements["decision-panel"].classList.toggle("phase-choice", phase === "CHOICE");
+    elements["decision-panel"].classList.toggle("phase-mulligan", phase === "MULLIGAN");
     if (!snapshot) {
       setText(elements["action-instructions"], "等待本机服务……");
       return;
@@ -1251,6 +1512,11 @@
       setText(elements["action-instructions"], "等待对手完成操作……");
       return;
     }
+
+    // Directly actionable cards and the lower backup controls make the
+    // permanent help banner redundant on the battlefield.  Selection hints
+    // below remain visible when the player actually needs a choice.
+    setHidden(elements["action-instructions"], true);
 
     if (actionIndex.endTurn.length === 1) {
       setHidden(elements["end-turn-button"], false);
@@ -1282,6 +1548,7 @@
   }
 
   function renderQuickActions() {
+    var actionIndex = guiState.current.actionIndex;
     var groups = [
       { type: "PLAY_CARD", title: "出牌" },
       { type: "ATTACK", title: "攻击" },
@@ -1327,6 +1594,7 @@
   }
 
   function sourceLocation(id, type) {
+    var snapshot = guiState.current.snapshot;
     var self = snapshot && snapshot.observation && snapshot.observation.self;
     if (!isObject(self)) {
       return "";
@@ -1376,6 +1644,7 @@
   }
 
   function renderSourceOptions(candidates) {
+    var selection = guiState.current.selection;
     var branches = Model.uniqueValues(candidates, "choose_option_entity_id");
     var positions = Model.uniqueValues(candidates, "position");
     if (branches.length) {
@@ -1429,6 +1698,7 @@
   }
 
   function selectedSummary(candidates) {
+    var selection = guiState.current.selection;
     var parts = [labelForType(selection.type) + " · " + labelForEntity(selection.sourceId)];
     if (selection.branchId !== null) {
       parts.push("分支：" + labelForEntity(selection.branchId));
@@ -1454,6 +1724,7 @@
   }
 
   function findVisibleEntity(id) {
+    var snapshot = guiState.current.snapshot;
     var wanted = entityId(id);
     if (wanted === null || !snapshot) {
       return null;
@@ -1487,6 +1758,8 @@
   }
 
   function renderActions() {
+    var snapshot = guiState.current.snapshot;
+    var actionIndex = guiState.current.actionIndex;
     clear(elements["action-menu"]);
     var types = Model.actionTypes(actionIndex);
     if (!types.length) {
@@ -1566,6 +1839,7 @@
   }
 
   function renderLog(events) {
+    var latestEventSeq = guiState.current.latestEventSeq;
     clear(elements["event-log"]);
     var list = asArray(events).slice().reverse();
     if (!list.length) {
@@ -1623,6 +1897,7 @@
   }
 
   function renderOutcome(outcome, phase) {
+    var snapshot = guiState.current.snapshot;
     if (!isObject(outcome) || phase !== "GAME_OVER") {
       setHidden(elements["game-over"], true);
       return;
@@ -1630,7 +1905,7 @@
     var winner = outcome.winner === null || outcome.winner === undefined ? null : String(outcome.winner);
     var message = winner ? (outcome.human_won === true ? "你赢了！" : "对手获胜。") : "这局是平局。";
     setText(elements["game-over-message"], message + (winner ? "（" + winner + "）" : ""));
-    setHidden(elements["game-over"], outcomeDismissedRevision === snapshot.revision);
+    setHidden(elements["game-over"], guiState.current.outcomeDismissedRevision === snapshot.revision);
     showNotice("对局结束：" + message, "outcome", 0);
   }
 

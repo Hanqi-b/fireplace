@@ -12,26 +12,26 @@
   </head>
   <body>
     <main class="game-shell" id="game" aria-labelledby="page-title">
-      <header class="topbar">
-        <div class="brand-block">
-          <p class="eyebrow">FIREPLACE / LOCAL MATCH</p>
-          <h1 id="page-title">本机卡牌对战</h1>
-          <p class="brand-caption">所有操作均由当前合法动作驱动</p>
-        </div>
-        <div class="match-status" aria-live="polite">
-          <span class="status-pill" id="phase-value" data-testid="phase">加载中</span>
-          <span class="turn-label" id="turn-value">回合 —</span>
-          <span class="turn-label" id="active-seat-value">行动方 —</span>
-          <span class="revision-label" id="revision-value" data-testid="revision">版本 —</span>
-        </div>
-      </header>
-
-      <div class="notice" id="notice" role="status" aria-live="polite" hidden></div>
-
       <section class="table" aria-label="战场">
+        <div class="board-vignette" aria-hidden="true"></div>
+
+        <header class="topbar">
+          <div class="brand-block">
+            <p class="eyebrow">FIREPLACE / LOCAL MATCH</p>
+            <h1 id="page-title">本机卡牌对战</h1>
+            <p class="brand-caption">所有操作均由当前合法动作驱动</p>
+          </div>
+          <div class="match-status" aria-live="polite">
+            <span class="status-pill" id="phase-value" data-testid="phase">加载中</span>
+            <span class="turn-label" id="turn-value">回合 —</span>
+          </div>
+        </header>
+
+        <div class="notice" id="notice" role="status" aria-live="polite" hidden></div>
+
         <article class="player-panel opponent-panel" id="opponent-panel" aria-labelledby="opponent-title">
           <div class="player-heading">
-            <div>
+            <div class="player-plaque">
               <p class="eyebrow">OPPONENT</p>
               <h2 id="opponent-title">对手</h2>
             </div>
@@ -56,7 +56,7 @@
 
         <article class="player-panel self-panel" id="self-panel" aria-labelledby="self-title">
           <div class="player-heading">
-            <div>
+            <div class="player-plaque">
               <p class="eyebrow">YOU</p>
               <h2 id="self-title">你</h2>
             </div>
@@ -71,57 +71,61 @@
           <div class="board" id="self-board" aria-label="你的场面" data-testid="self-board"></div>
           <div class="power-row" id="hero-power-row" data-testid="hero-power"></div>
         </article>
+
+        <section class="hand-section panel" aria-labelledby="hand-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">PRIVATE</p>
+              <h2 id="hand-title">你的手牌</h2>
+            </div>
+            <span class="muted" id="deck-count"></span>
+          </div>
+          <div class="hand" id="hand" aria-label="你的手牌" data-testid="hand"></div>
+        </section>
+
+        <section class="decision-section panel" id="decision-panel" aria-labelledby="decision-title" data-testid="decision-panel">
+          <div class="section-heading actions-heading">
+            <div>
+              <p class="eyebrow">DECISION</p>
+              <h2 id="decision-title">你的操作</h2>
+            </div>
+            <span class="muted" id="action-count" data-testid="action-count"></span>
+          </div>
+          <p class="instructions" id="action-instructions">正在读取当前对局……</p>
+          <div class="selection-summary" id="selection-summary" aria-live="polite" hidden></div>
+          <div class="decision-tools">
+            <div class="choice-options" id="choice-options" aria-label="选择项" data-testid="choice-options"></div>
+            <div class="position-choices" id="position-choices" aria-label="随从位置" data-testid="position-choices"></div>
+            <div class="target-hint" id="target-hint" hidden></div>
+            <div class="decision-buttons">
+              <button class="primary-button" id="action-submit" type="button" data-testid="action-submit" hidden>确认操作</button>
+              <button class="secondary-button" id="selection-cancel" type="button" data-testid="selection-cancel" hidden>取消选择</button>
+              <button class="end-turn-button" id="end-turn-button" type="button" data-testid="end-turn-button" hidden>结束回合</button>
+            </div>
+          </div>
+          <div class="pending-choice" id="pending-choice" hidden></div>
+        </section>
       </section>
 
-      <section class="hand-section panel" aria-labelledby="hand-title">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">PRIVATE</p>
-            <h2 id="hand-title">你的手牌</h2>
+      <div class="below-board">
+        <section class="log-section panel" aria-labelledby="log-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">MATCH LOG</p>
+              <h2 id="log-title">对局记录</h2>
+            </div>
+            <span class="muted">完整公开事件 · 最新在前</span>
           </div>
-          <span class="muted" id="deck-count"></span>
-        </div>
-        <div class="hand" id="hand" aria-label="你的手牌" data-testid="hand"></div>
-      </section>
-
-      <section class="decision-section panel" id="decision-panel" aria-labelledby="decision-title" data-testid="decision-panel">
-        <div class="section-heading actions-heading">
-          <div>
-            <p class="eyebrow">DECISION</p>
-            <h2 id="decision-title">你的操作</h2>
-          </div>
-          <span class="muted" id="action-count" data-testid="action-count"></span>
-        </div>
-        <p class="instructions" id="action-instructions">正在读取当前对局……</p>
-        <div class="selection-summary" id="selection-summary" aria-live="polite" hidden></div>
-        <div class="decision-tools">
+          <ol class="event-log" id="event-log" aria-live="polite" data-testid="event-log"></ol>
+        </section>
+        <aside class="below-board-tools" aria-label="备用操作">
           <div class="quick-actions" id="quick-actions" aria-label="当前可用操作" data-testid="quick-actions" hidden></div>
-          <div class="choice-options" id="choice-options" aria-label="选择项" data-testid="choice-options"></div>
-          <div class="position-choices" id="position-choices" aria-label="随从位置" data-testid="position-choices"></div>
-          <div class="target-hint" id="target-hint" hidden></div>
-          <div class="decision-buttons">
-            <button class="primary-button" id="action-submit" type="button" data-testid="action-submit" hidden>确认操作</button>
-            <button class="secondary-button" id="selection-cancel" type="button" data-testid="selection-cancel" hidden>取消选择</button>
-            <button class="end-turn-button" id="end-turn-button" type="button" data-testid="end-turn-button" hidden>结束回合</button>
-          </div>
-        </div>
-        <div class="pending-choice" id="pending-choice" hidden></div>
-        <details class="fallback-actions" id="action-fallback" data-testid="action-fallback">
-          <summary>显示全部合法动作（备用）<span id="fallback-count"></span></summary>
-          <div class="action-groups" id="action-menu" aria-live="polite"></div>
-        </details>
-      </section>
-
-      <section class="log-section panel" aria-labelledby="log-title">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">MATCH LOG</p>
-            <h2 id="log-title">对局记录</h2>
-          </div>
-          <span class="muted">完整公开事件 · 最新在前</span>
-        </div>
-        <ol class="event-log" id="event-log" aria-live="polite" data-testid="event-log"></ol>
-      </section>
+          <details class="fallback-actions" id="action-fallback" data-testid="action-fallback">
+            <summary>显示全部合法动作（备用）<span id="fallback-count"></span></summary>
+            <div class="action-groups" id="action-menu" aria-live="polite"></div>
+          </details>
+        </aside>
+      </div>
 
       <section class="game-over" id="game-over" data-testid="game-over" hidden>
         <div class="game-over-card">
@@ -135,7 +139,11 @@
 
       <footer class="footer">
         <span>本机 HTTP 会话 · 对手暗手不会发送到浏览器</span>
-        <span id="connection-value">连接中……</span>
+        <span class="technical-status">
+          <span id="active-seat-value">行动方 —</span>
+          <span id="revision-value" data-testid="revision">版本 —</span>
+          <span id="connection-value">连接中……</span>
+        </span>
       </footer>
     </main>
 
