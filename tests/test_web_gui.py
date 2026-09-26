@@ -158,7 +158,11 @@ def test_real_snapshot_hides_opponent_hand_and_uses_placeholder(web_game, monkey
         assert response.status == 200
         html = response.read()
         assert b"app.js" in html
+        assert b"status_view.js" in html
         assert b"opponent-mana-value" in html
+    with urlopen(base + "/status_view.js", timeout=10) as response:
+        assert response.status == 200
+        assert b"FireplaceStatusView" in response.read()
     with urlopen(base + "/style.css", timeout=10) as response:
         assert b"placeholder" in response.read().lower()
     with urlopen(base + "/board-scene.webp", timeout=10) as response:

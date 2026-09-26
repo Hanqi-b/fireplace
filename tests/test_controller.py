@@ -191,6 +191,48 @@ def test_taunt_filters_attack_targets():
     assert {a.target_entity_id for a in attacks} == {taunt.entity_id}
 
 
+def test_observation_exposes_public_minion_statuses_on_both_boards():
+    current = session()
+    finish_mulligan(current)
+    player = current.game.current_player
+
+    minions = {
+        "dormant": player.summon("BT_156"),       # Dormant, Rush
+        "lifesteal": player.summon("BT_197"),     # Lifesteal
+        "poisonous": player.summon("EX1_170"),    # Poisonous
+        "reborn": player.summon("ULD_208"),       # Taunt, Reborn
+        "windfury": player.summon("CS2_169"),    # Windfury
+        "charge": player.summon("CS2_171"),       # Charge
+        "silenced": player.summon("EX1_021"),     # Silence removes Windfury
+    }
+    minions["silenced"].silence()
+    opponent_minion = player.opponent.summon("EX1_170")
+
+    view = current.observation(player)
+    own_board = {card["card_id"]: card for card in view["self"]["board"]}
+    opponent_board = {card["card_id"]: card for card in view["opponent"]["board"]}
+
+    assert own_board["BT_156"]["dormant"] is True
+    assert own_board["BT_156"]["dormant_turns"] == 2
+    assert "dormant_turns" not in own_board["BT_197"]
+    assert own_board["BT_197"]["lifesteal"] is True
+    assert own_board["EX1_170"]["poisonous"] is True
+    assert own_board["ULD_208"]["taunt"] is True
+    assert own_board["ULD_208"]["reborn"] is True
+    assert own_board["CS2_169"]["windfury"] is True
+    assert own_board["CS2_171"]["charge"] is True
+    assert own_board["BT_156"]["rush"] is True
+    assert own_board["EX1_021"]["silenced"] is True
+    assert own_board["EX1_021"]["windfury"] is False
+    for field in ("taunt", "divine_shield", "frozen", "stealthed", "can_attack"):
+        assert field in own_board["BT_156"]
+
+    assert opponent_board["EX1_170"]["entity_id"] == opponent_minion.entity_id
+    assert opponent_board["EX1_170"]["poisonous"] is True
+    assert "hand" not in view["opponent"]
+    assert "hand_count" in view["opponent"]
+
+
 def test_weapon_hero_attack_uses_attack_action():
     current = session(hero=CardClass.PALADIN.default_hero)
     finish_mulligan(current)

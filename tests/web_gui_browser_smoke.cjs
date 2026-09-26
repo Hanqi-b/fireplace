@@ -270,6 +270,7 @@ async function main() {
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
     const page = await context.newPage();
     page.setDefaultTimeout(timeout);
+    page.on("pageerror", (error) => console.error(`browser page error: ${error.stack || error}`));
     const seenActions = [];
     page.on("request", (request) => {
       if (request.method() === "POST" && new URL(request.url()).pathname === "/api/action") {
@@ -538,6 +539,16 @@ async function main() {
       { ...baseHand, entity_id: 91503, cost: 6, printed_cost: 5, atk: 1, printed_atk: 2,
         max_health: 1, printed_health: 2, powered_up: true },
     ];
+    visual.observation.self.board = [
+      { entity_id: 91511, card_id: "CS2_231", name: "词条测试随从", atk: 3, health: 4,
+        max_health: 4, taunt: true, divine_shield: true, poisonous: true, lifesteal: true },
+      { entity_id: 91512, card_id: "CS2_231", name: "休眠测试随从", atk: 2, health: 2,
+        max_health: 2, dormant: true, dormant_turns: 2 },
+    ];
+    visual.observation.opponent.board = [
+      { entity_id: 91513, card_id: "CS2_231", name: "冰冻测试随从", atk: 1, health: 1,
+        max_health: 1, frozen: true, stealthed: true },
+    ];
     visual.legal_actions = [
       { schema_version: 1, type: "PLAY_CARD", source_entity_id: 91501, position: 0 },
       { schema_version: 1, type: "PLAY_CARD", source_entity_id: 91502,
@@ -587,6 +598,30 @@ async function main() {
     assert.equal(visualColors.increasedAttack, "rgb(161, 239, 168)");
     assert.equal(visualColors.decreasedHealth, "rgb(255, 255, 255)");
     assert.equal(visualColors.reducedCost, "rgb(161, 239, 168)");
+    const keywordMinion = visualPage.locator('#self-board .board-card[data-entity-id="91511"]');
+    const dormantMinion = visualPage.locator('#self-board .board-card[data-entity-id="91512"]');
+    assert(await keywordMinion.evaluate((node) => node.classList.contains("has-taunt") &&
+      node.classList.contains("has-divine-shield") && node.classList.contains("has-poisonous")));
+    assert.equal(await keywordMinion.locator(".keyword-icon").count(), 3);
+    assert.equal(await keywordMinion.locator(".keyword-more").innerText(), "+1");
+    assert.equal(await keywordMinion.getAttribute("title"), null,
+      "custom keyword tooltip should not compete with the browser title tooltip");
+    assert.match(await keywordMinion.getAttribute("aria-label"), /嘲讽.*圣盾.*剧毒.*吸血/);
+    assert.equal(await dormantMinion.locator(".dormant-counter").innerText(), "2");
+    assert.match(await dormantMinion.getAttribute("aria-label"), /休眠.*剩余 2 回合/);
+    assert(await visualPage.locator('#opponent-board .board-card[data-entity-id="91513"]')
+      .evaluate((node) => node.classList.contains("has-frozen") && node.classList.contains("has-stealthed")));
+    await keywordMinion.hover();
+    await visualPage.locator(".keyword-tooltip").waitFor({ state: "visible", timeout });
+    await visualPage.waitForTimeout(180);
+    await visualPage.screenshot({ path: path.join(artifacts, "web-gui-board-keywords-hover.png"), fullPage: true });
+    await keywordMinion.locator('[data-testid="card-inspect"]').click();
+    await visualPage.locator("#card-modal").waitFor({ state: "visible", timeout });
+    assert.match(await visualPage.locator("#modal-statuses").innerText(), /嘲讽.*圣盾.*剧毒.*吸血/s);
+    await visualPage.locator("#modal-close").click();
+    await dormantMinion.locator('[data-testid="card-inspect"]').click();
+    assert.match(await visualPage.locator("#modal-statuses").innerText(), /休眠.*剩余 2 回合/);
+    await visualPage.locator("#modal-close").click();
     await activeHand.locator('[data-testid="card-inspect"]').focus();
     await visualPage.keyboard.press("Enter");
     await visualPage.locator("#card-modal").waitFor({ state: "visible", timeout });
@@ -599,7 +634,41 @@ async function main() {
     await visualPage.screenshot({ path: path.join(artifacts, "web-gui-hand-live-stats.png"), fullPage: true });
     await visualPage.setViewportSize({ width: 390, height: 844 });
     await assertNoHorizontalOverflow(visualPage, "mobile hand live stats");
+    assert.equal(await dormantMinion.locator(".dormant-counter").innerText(), "2");
+    assert(await keywordMinion.locator(".stat.health strong").isVisible(),
+      "keyword layer must leave the minion health visible on mobile");
+    const mobileKeywordGeometry = await keywordMinion.evaluate((node) => {
+      const more = node.querySelector(".keyword-more").getBoundingClientRect();
+      const attack = node.querySelector(".stat.attack").getBoundingClientRect();
+      const health = node.querySelector(".stat.health").getBoundingClientRect();
+      return {
+        more: { left: more.left, right: more.right, top: more.top, bottom: more.bottom },
+        attack: { left: attack.left, right: attack.right, top: attack.top, bottom: attack.bottom },
+        health: { left: health.left, right: health.right, top: health.top, bottom: health.bottom },
+        overlap: [attack, health].some((stat) => more.left < stat.right && more.right > stat.left &&
+          more.top < stat.bottom && more.bottom > stat.top),
+      };
+    });
+    assert(!mobileKeywordGeometry.overlap,
+      `keyword overflow indicator must not cover combat stats: ${JSON.stringify(mobileKeywordGeometry)}`);
     await visualPage.screenshot({ path: path.join(artifacts, "web-gui-hand-live-stats-mobile.png"), fullPage: true });
+    visual.locale = "enUS";
+    await visualPage.evaluate(() => localStorage.setItem("fireplace.locale", "enUS"));
+    await visualPage.reload({ waitUntil: "domcontentloaded" });
+    await dormantMinion.waitFor({ state: "visible", timeout });
+    assert.match(await dormantMinion.getAttribute("aria-label"), /Dormant.*2 turns left/);
+    assert.match(await keywordMinion.getAttribute("aria-label"), /Taunt.*Divine shield.*Poisonous.*Lifesteal/);
+    await dormantMinion.locator('[data-testid="card-inspect"]').click();
+    assert.match(await visualPage.locator("#modal-statuses").innerText(), /Dormant.*2 turns left/);
+    visual.revision += 1;
+    visual.observation.self.board[1].dormant = false;
+    delete visual.observation.self.board[1].dormant_turns;
+    await visualPage.evaluate(() => window.fireplaceWebGui.loadState(true));
+    assert(!await dormantMinion.evaluate((node) => node.classList.contains("has-dormant")));
+    assert.equal(await dormantMinion.locator(".dormant-counter").count(), 0);
+    assert(await visualPage.locator("#modal-statuses").evaluate((node) => node.hidden),
+      "open details must drop dormant state when the next snapshot wakes the minion");
+    await visualPage.locator("#modal-close").click();
     await visualPage.close();
 
     // Near board capacity, every legal insertion slot must remain reachable
@@ -614,6 +683,8 @@ async function main() {
       ...mulliganState.observation.self.hand[0], entity_id: 91000 + index,
       atk: 1, health: 1, max_health: 1, can_attack: false,
     }));
+    crowded.observation.self.board[0].taunt = true;
+    crowded.observation.self.board[0].poisonous = true;
     crowded.observation.opponent.board = Array.from({ length: 6 }, (_, index) => ({
       ...mulliganState.observation.self.hand[0], entity_id: 91100 + index,
       atk: 1, health: 1, max_health: 1, can_attack: false,
@@ -650,6 +721,22 @@ async function main() {
     }
     await crowdedPage.screenshot({ path: path.join(artifacts, "web-gui-desktop-crowded-board.png"), fullPage: true });
     await crowdedPage.setViewportSize({ width: 390, height: 844 });
+    const firstCrowdedMinion = crowdedPage.locator('#self-board .board-card[data-entity-id="91000"]');
+    await firstCrowdedMinion.hover();
+    await crowdedPage.locator(".keyword-tooltip").waitFor({ state: "visible", timeout });
+    const keywordBounds = await crowdedPage.evaluate(() => {
+      const tooltip = document.querySelector(".keyword-tooltip").getBoundingClientRect();
+      const rail = document.querySelector('#self-board .board-card[data-entity-id="91000"] .keyword-rail').getBoundingClientRect();
+      const board = document.querySelector("#self-board").getBoundingClientRect();
+      return { tooltipLeft: tooltip.left, tooltipRight: tooltip.right, tooltipTop: tooltip.top,
+        tooltipBottom: tooltip.bottom, railLeft: rail.left, boardLeft: board.left, viewport: innerWidth };
+    });
+    assert(keywordBounds.tooltipLeft >= 0 && keywordBounds.tooltipRight <= keywordBounds.viewport &&
+      keywordBounds.tooltipTop >= 0 && keywordBounds.tooltipBottom <= 844,
+    `mobile keyword tooltip must stay in viewport: ${JSON.stringify(keywordBounds)}`);
+    assert(keywordBounds.railLeft >= keywordBounds.boardLeft - 1,
+      `first minion keyword icons must not be clipped by scroller: ${JSON.stringify(keywordBounds)}`);
+    await crowdedPage.screenshot({ path: path.join(artifacts, "web-gui-mobile-crowded-keywords.png") });
     await crowdedPage.locator('[data-testid="hand-card"][data-entity-id="91020"]').click();
     assert.equal(await crowdedPage.locator("#self-board .board-slot").count(), 7);
     for (let position = 0; position <= 6; position += 1) {

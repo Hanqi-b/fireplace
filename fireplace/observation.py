@@ -164,6 +164,7 @@ def _visible_card_with_options(card, include_cost=False):
 def _character(card, include_position=False):
     """Project a publicly visible hero or minion."""
 
+    dormant = _bool(_get(card, "dormant"))
     result = _card_identity(card)
     result.update(
         {
@@ -176,9 +177,22 @@ def _character(card, include_position=False):
             "divine_shield": _bool(_get(card, "divine_shield")),
             "frozen": _bool(_get(card, "frozen")),
             "stealthed": _bool(_get(card, "stealthed")),
+            "poisonous": _bool(_get(card, "poisonous")),
+            "dormant": dormant,
+            "lifesteal": _bool(_get(card, "lifesteal")),
+            "reborn": _bool(_get(card, "reborn")),
+            "windfury": _bool(_get(card, "windfury")),
+            "rush": _bool(_get(card, "rush")),
+            "charge": _bool(_get(card, "charge")),
+            "silenced": _bool(_get(card, "silenced")),
             "can_attack": _bool(_call(card, "can_attack")),
         }
     )
+    if dormant:
+        # Fireplace keeps this as the number of turns remaining.  It can be
+        # stale or malformed on lightweight objects, so never expose a
+        # negative countdown and do not publish it for awake characters.
+        result["dormant_turns"] = max(0, _int(_get(card, "dormant_turns")))
     if include_position:
         result["zone_position"] = _int(_get(card, "zone_position"))
     return result

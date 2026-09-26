@@ -6,6 +6,7 @@
   var API_START = "/api/start";
   var API_RETURN = "/api/return";
   var Model = window.FireplaceActionModel;
+  var StatusView = window.FireplaceStatusView;
   var elements = {};
   var guiState = createGuiState(Model);
   var busy = false;
@@ -302,6 +303,7 @@
       "modal-card-name",
       "modal-card-id",
       "modal-stats",
+      "modal-statuses",
       "modal-card-text",
     ].forEach(function (id) {
       elements[id] = getElement(id);
@@ -1215,6 +1217,7 @@
   }
 
   function renderEmptyState() {
+    StatusView.hideTooltip();
     setText(elements["phase-value"], tr("status.unavailable"));
     setText(elements["turn-value"], tr("status.turn", { value: "—" }));
     setText(elements["active-seat-value"], tr("status.active", { value: "—" }));
@@ -1432,6 +1435,7 @@
   }
 
   function renderBoard(container, board, own) {
+    StatusView.hideTooltip();
     clear(container);
     var cards = asArray(board);
     var selection = guiState.current.selection;
@@ -1455,11 +1459,11 @@
       });
       wrapper.setAttribute("data-entity-id", String(id === null ? "" : id));
       wrapper.appendChild(createCardArt(card, "art"));
+      StatusView.decorateBoardCard(wrapper, card, tr);
       var content = document.createElement("div");
       content.className = "card-content";
       content.appendChild(cardTitle(card));
       content.appendChild(createCharacterStats(card, true, true));
-      content.appendChild(createKeywordBadges(card, own));
       appendCardText(content, card);
       wrapper.appendChild(content);
       container.appendChild(wrapper);
@@ -1894,30 +1898,6 @@
     suffix.textContent = label;
     stat.appendChild(suffix);
     return stat;
-  }
-
-  function createKeywordBadges(card, own) {
-    var badges = document.createElement("div");
-    badges.className = "card-badges";
-    if (card.taunt) {
-      badges.appendChild(createBadge(tr("taunt"), "taunt"));
-    }
-    if (card.divine_shield) {
-      badges.appendChild(createBadge(tr("shield"), "shield"));
-    }
-    if (card.frozen) {
-      badges.appendChild(createBadge(tr("frozen"), "frozen"));
-    }
-    if (card.stealthed) {
-      badges.appendChild(createBadge(tr("stealth"), "stealth"));
-    }
-    if (card.can_attack) {
-      badges.appendChild(createBadge(tr("ready"), "ready"));
-    }
-    if (own && card.zone_position !== undefined) {
-      badges.appendChild(createBadge(tr("zonePosition", { value: card.zone_position }), "position"));
-    }
-    return badges;
   }
 
   function createBadge(text, extraClass) {
@@ -2657,6 +2637,7 @@
     cardStatValues(card).forEach(function (value) {
       elements["modal-stats"].appendChild(createStat(value.name, value.label, value.current));
     });
+    StatusView.renderDetails(elements["modal-statuses"], card, tr);
     setText(elements["modal-card-text"], cardText(card) || tr("noCardText"));
     setHidden(elements["card-modal"], false);
     if (focusClose) {

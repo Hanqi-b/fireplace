@@ -43,6 +43,7 @@ _STATIC_MIME_TYPES = {
     "app.js": "text/javascript; charset=utf-8",
     "action_model.js": "text/javascript; charset=utf-8",
     "i18n.js": "text/javascript; charset=utf-8",
+    "status_view.js": "text/javascript; charset=utf-8",
     "style.css": "text/css; charset=utf-8",
     "board-scene.webp": "image/webp",
 }
@@ -837,6 +838,7 @@ class _RequestHandler(BaseHTTPRequestHandler):
             "/app.js",
             "/action_model.js",
             "/i18n.js",
+            "/status_view.js",
             "/style.css",
             "/board-scene.webp",
         }:
