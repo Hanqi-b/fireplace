@@ -22,6 +22,8 @@
   var attackLine = null;
   var attackStroke = null;
 
+  window.addEventListener("resize", refreshLiveStatsOverlays);
+
   window.addEventListener("beforeunload", function () {
     assetRequests.forEach(function (entry) {
       if (entry.objectUrl) {
@@ -1510,8 +1512,14 @@
     asArray(hand).forEach(function (card) {
       var id = entityId(card && card.entity_id);
       var sourceTypes = phase === "MAIN" ? sourceTypesFor(id) : [];
+      var playActions = phase === "MAIN"
+        ? Model.sourceActions(guiState.current.actionIndex, "PLAY_CARD", id)
+        : [];
+      var canPlay = playActions.length > 0;
+      var poweredUp = canPlay && Boolean(card && card.powered_up);
       var mulliganSelected = selection.mulliganIds.some(function (value) { return value === id; });
-      var wrapper = createEntityCard(card, "card hand-card " + (sourceTypes.length ? "sourceable" : "") + (mulliganSelected ? " mulligan-selected" : ""), function () {
+      var wrapper = createEntityCard(card, "card hand-card " + (canPlay ? "sourceable playable" : "") +
+        (poweredUp ? " powered-up" : "") + (mulliganSelected ? " mulligan-selected" : ""), function () {
         if (phase === "MULLIGAN") {
           toggleMulligan(id);
         } else if (sourceTypes.length) {
@@ -1520,11 +1528,10 @@
       });
       wrapper.setAttribute("data-entity-id", String(id === null ? "" : id));
       wrapper.setAttribute("data-testid", "hand-card");
-      wrapper.appendChild(createCardArt(card, "render"));
-      var cost = document.createElement("span");
-      cost.className = "card-cost";
-      cost.textContent = card && card.cost !== undefined && card.cost !== null ? String(card.cost) : "—";
-      wrapper.appendChild(cost);
+      wrapper.setAttribute("data-playable", canPlay ? "true" : "false");
+      wrapper.setAttribute("data-powered-up", poweredUp ? "true" : "false");
+      wrapper.setAttribute("aria-label", handCardLabel(card, canPlay, poweredUp));
+      wrapper.appendChild(createCardArt(card, "render", { liveStats: true }));
       var content = document.createElement("div");
       content.className = "card-content";
       content.appendChild(cardTitle(card));
@@ -1534,6 +1541,137 @@
       appendCardText(content, card);
       wrapper.appendChild(content);
       elements["hand"].appendChild(wrapper);
+    });
+  }
+
+  function optionalNumber(value) {
+    if (value === null || value === undefined || value === "") {
+      return null;
+    }
+    var number = typeof value === "number" ? value : Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function cardHealthValue(card) {
+    if (!isObject(card)) {
+      return null;
+    }
+    var health = optionalNumber(card.health);
+    return health === null ? optionalNumber(card.max_health) : health;
+  }
+
+  function cardStatValues(card) {
+    if (!isObject(card)) {
+      return [];
+    }
+    var values = [];
+    function add(name, label, current, printed, changeType) {
+      var live = optionalNumber(current);
+      if (live === null) {
+        return;
+      }
+      values.push({
+        name: name,
+        label: label,
+        current: live,
+        printed: optionalNumber(printed),
+        changeType: changeType,
+      });
+    }
+    add("cost", tr("cost"), card.cost, card.printed_cost, "cost");
+    add("attack", tr("attack"), card.atk, card.printed_atk, "stat");
+    var durability = optionalNumber(card.durability);
+    if (durability !== null) {
+      add("durability", tr("durability"), durability, card.printed_durability, "stat");
+    } else {
+      add("health", tr("health"), cardHealthValue(card), card.printed_health, "stat");
+    }
+    return values;
+  }
+
+  function statChangeClass(value) {
+    if (value.printed === null || value.current === value.printed) {
+      return "unchanged";
+    }
+    if (value.changeType === "cost") {
+      return value.current < value.printed ? "cost-lower" : "cost-higher";
+    }
+    return value.current > value.printed ? "stat-higher" : "stat-lower";
+  }
+
+  function handCardLabel(card, canPlay, poweredUp) {
+    var parts = [cardName(card)];
+    cardStatValues(card).forEach(function (value) {
+      var detail = tr("handStatCurrent", { name: value.label, value: value.current });
+      if (value.printed !== null && value.current !== value.printed) {
+        detail += " " + tr("handStatPrinted", { name: value.label, value: value.printed });
+        detail += " " + tr(value.current > value.printed ? "handStatIncreased" : "handStatDecreased");
+      }
+      parts.push(detail);
+    });
+    if (canPlay) {
+      parts.push(tr("play"));
+    }
+    if (poweredUp) {
+      parts.push(tr("handConditionMet"));
+    }
+    return parts.join(currentLocale === "enUS" ? ", " : "，");
+  }
+
+  function createLiveStatsOverlay(card) {
+    var values = cardStatValues(card);
+    if (!values.length) {
+      return null;
+    }
+    var overlay = document.createElement("div");
+    overlay.className = "card-live-stats";
+    overlay.setAttribute("aria-hidden", "true");
+    values.forEach(function (value) {
+      var node = document.createElement("span");
+      node.className = "card-live-stat card-live-stat-" + value.name + " " + statChangeClass(value);
+      node.textContent = String(value.current);
+      node.title = value.label + " " + String(value.current);
+      overlay.appendChild(node);
+    });
+    return overlay;
+  }
+
+  function resetLiveStatsOverlay(overlay) {
+    if (!overlay) {
+      return;
+    }
+    overlay.style.top = "0";
+    overlay.style.left = "0";
+    overlay.style.width = "100%";
+    overlay.style.height = "100%";
+  }
+
+  function syncLiveStatsOverlay(art, image, overlay) {
+    if (!art || !image || !overlay) {
+      return;
+    }
+    var artWidth = art.clientWidth;
+    var artHeight = art.clientHeight;
+    var imageWidth = image.naturalWidth;
+    var imageHeight = image.naturalHeight;
+    if (!artWidth || !artHeight || image.hidden || !imageWidth || !imageHeight) {
+      resetLiveStatsOverlay(overlay);
+      return;
+    }
+    var scale = Math.min(artWidth / imageWidth, artHeight / imageHeight);
+    var renderedWidth = imageWidth * scale;
+    var renderedHeight = imageHeight * scale;
+    overlay.style.top = ((artHeight - renderedHeight) / 2) + "px";
+    overlay.style.left = ((artWidth - renderedWidth) / 2) + "px";
+    overlay.style.width = renderedWidth + "px";
+    overlay.style.height = renderedHeight + "px";
+  }
+
+  function refreshLiveStatsOverlays() {
+    document.querySelectorAll(".card-live-stats").forEach(function (overlay) {
+      var art = overlay.parentElement;
+      var image = art && art.querySelector("img");
+      syncLiveStatsOverlay(art, image, overlay);
     });
   }
 
@@ -1573,9 +1711,10 @@
     return wrapper;
   }
 
-  function createCardArt(card, kind) {
+  function createCardArt(card, kind, options) {
     var art = document.createElement("div");
     art.className = "card-art asset-placeholder";
+    var liveStats = options && options.liveStats ? createLiveStatsOverlay(card) : null;
     var cardId = isObject(card) ? card.card_id : null;
     if (cardId) {
       var image = document.createElement("img");
@@ -1586,10 +1725,12 @@
       var imageRank = -1;
       image.addEventListener("load", function () {
         art.classList.remove("asset-placeholder");
+        syncLiveStatsOverlay(art, image, liveStats);
       });
       image.addEventListener("error", function () {
         image.hidden = true;
         art.classList.add("asset-placeholder");
+        resetLiveStatsOverlay(liveStats);
       });
       art.appendChild(image);
       function offerAsset(assetKind, result) {
@@ -1631,6 +1772,10 @@
     mark.className = "asset-mark";
     mark.textContent = cardId ? "✦" : "?";
     art.appendChild(mark);
+    if (liveStats) {
+      art.appendChild(liveStats);
+      syncLiveStatsOverlay(art, cardId ? art.querySelector("img") : null, liveStats);
+    }
     return art;
   }
 
@@ -2503,22 +2648,15 @@
       return;
     }
     clear(elements["modal-art"]);
-    elements["modal-art"].appendChild(createCardArt(card, "render"));
+    elements["modal-art"].appendChild(createCardArt(card, "render", {
+      liveStats: card.printed_cost !== undefined,
+    }));
     setText(elements["modal-card-name"], cardName(card));
     setText(elements["modal-card-id"], safeText(card.card_id, ""));
     clear(elements["modal-stats"]);
-    if (card.cost !== undefined) {
-      elements["modal-stats"].appendChild(createStat("cost", tr("cost"), card.cost));
-    }
-    if (card.atk !== undefined) {
-      elements["modal-stats"].appendChild(createStat("attack", tr("attack"), card.atk));
-    }
-    if (card.health !== undefined) {
-      elements["modal-stats"].appendChild(createStat("health", tr("health"), card.health));
-    }
-    if (card.durability !== undefined) {
-      elements["modal-stats"].appendChild(createStat("durability", tr("durability"), card.durability));
-    }
+    cardStatValues(card).forEach(function (value) {
+      elements["modal-stats"].appendChild(createStat(value.name, value.label, value.current));
+    });
     setText(elements["modal-card-text"], cardText(card) || tr("noCardText"));
     setHidden(elements["card-modal"], false);
     if (focusClose) {

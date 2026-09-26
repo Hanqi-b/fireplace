@@ -363,7 +363,13 @@ class PlayableCard(BaseCard, Entity, TargetableByAuras):
         if not self.data.scripts.powered_up:
             return False
         for script in self.data.scripts.powered_up:
-            if not script.check(self):
+            # Evaluator.__neg__ is used by conditions such as Zephrys's
+            # no-duplicates check.  The visual condition must use the same
+            # polarity as Evaluator.evaluate(), which drives the card effect.
+            matched = bool(script.check(self))
+            if getattr(script, "_neg", False):
+                matched = not matched
+            if not matched:
                 return False
         return True
 

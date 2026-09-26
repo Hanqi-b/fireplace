@@ -11,6 +11,8 @@ keeps the observation layer usable by controllers and by callers that only
 have a partially initialised game.
 """
 
+from hearthstone.enums import CardType
+
 
 def _get(obj, name, default=None):
     """Read an attribute without making a partially built game unusable."""
@@ -136,6 +138,23 @@ def _card_identity(card, include_cost=False):
 
 def _visible_card_with_options(card, include_cost=False):
     result = _card_identity(card, include_cost=include_cost)
+    if include_cost:
+        # Only the viewer's hand uses this projection.  Compare the live card
+        # values with the printed data so the UI can color changed numbers
+        # without evaluating game rules or receiving Fireplace objects.
+        data = _get(card, "data")
+        result["printed_cost"] = _optional_int(_get(data, "cost"))
+        result["powered_up"] = _bool(_get(card, "powered_up"))
+        card_type = _get(card, "type", _get(data, "type"))
+        if card_type in (CardType.MINION, CardType.WEAPON):
+            result["atk"] = _optional_int(_get(card, "atk"))
+            result["printed_atk"] = _optional_int(_get(data, "atk"))
+        if card_type == CardType.MINION:
+            result["max_health"] = _optional_int(_get(card, "max_health"))
+            result["printed_health"] = _optional_int(_get(data, "health"))
+        elif card_type == CardType.WEAPON:
+            result["durability"] = _optional_int(_get(card, "durability"))
+            result["printed_durability"] = _optional_int(_get(data, "durability"))
     options = _cards(_get(card, "choose_cards"))
     if options:
         result["choose_options"] = [_card_identity(option) for option in options]

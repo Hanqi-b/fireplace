@@ -169,6 +169,55 @@ def test_real_snapshot_hides_opponent_hand_and_uses_placeholder(web_game, monkey
     assert status == 404 and missing["error"]
 
 
+def test_hand_snapshot_exposes_live_numbers_and_powered_up_without_opponent_hand(web_game):
+    _app, human, _opponent, base = web_game()
+    ready(base)
+    human.max_mana = 5
+    zephrys = human.give("ULD_003")
+    fireball = human.give("CS2_029")
+    weapon = human.give("CS2_106")
+    expensive_minion = human.give("CS2_187")
+    zephrys.cost = 3
+    zephrys.atk = 4
+    zephrys.max_health = 1
+    fireball.cost = 2
+    weapon.atk = 4
+    weapon.max_durability = 1
+    expensive_minion.cost = 6
+
+    status, state = request(base)
+    assert status == 200
+    hand = {card["entity_id"]: card for card in state["observation"]["self"]["hand"]}
+    assert {key: hand[zephrys.entity_id][key] for key in (
+        "cost", "printed_cost", "atk", "printed_atk", "max_health",
+        "printed_health", "powered_up",
+    )} == {
+        "cost": 3, "printed_cost": 2, "atk": 4, "printed_atk": 3,
+        "max_health": 1, "printed_health": 2, "powered_up": False,
+    }
+    assert hand[fireball.entity_id]["cost"] == 2
+    assert hand[fireball.entity_id]["printed_cost"] == 4
+    assert "atk" not in hand[fireball.entity_id]
+    assert "max_health" not in hand[fireball.entity_id]
+    assert hand[weapon.entity_id]["atk"] == 4
+    assert hand[weapon.entity_id]["printed_atk"] == 3
+    assert hand[weapon.entity_id]["durability"] == 1
+    assert hand[weapon.entity_id]["printed_durability"] == 2
+    assert hand[expensive_minion.entity_id]["cost"] == 6
+    assert hand[expensive_minion.entity_id]["printed_cost"] == 5
+    assert "hand" not in state["observation"]["opponent"]
+    assert any(action["type"] == "PLAY_CARD" and action["source_entity_id"] == zephrys.entity_id
+               for action in state["legal_actions"])
+    assert not any(action["type"] == "PLAY_CARD" and action["source_entity_id"] == expensive_minion.entity_id
+                   for action in state["legal_actions"])
+
+    human.deck.clear()
+    _, powered = request(base)
+    powered_hand = {card["entity_id"]: card for card in powered["observation"]["self"]["hand"]}
+    assert powered_hand[zephrys.entity_id]["powered_up"] is True
+    assert "hand" not in powered["observation"]["opponent"]
+
+
 def test_mulligan_ai_advance_and_stale_action(web_game):
     app, human, opponent, base = web_game()
     status, initial = request(base)

@@ -300,6 +300,10 @@ async function main() {
     await waitForPhase(missingAssetPage, "换牌");
     await missingAssetPage.locator('[data-testid="hand-card"] .asset-placeholder').first().waitFor({ state: "visible", timeout });
     assert((await missingAssetPage.locator('[data-testid="hand-card"] .card-content').first().innerText()).trim(), "CSS placeholder must retain the card name");
+    assert.equal(await missingAssetPage.locator('[data-testid="hand-card"] .card-live-stat-cost').first().innerText(), "0",
+      "CSS placeholder must show the current mana cost");
+    assert.equal(await missingAssetPage.locator('[data-testid="hand-card"] .card-live-stat-attack').first().innerText(), "1");
+    assert.equal(await missingAssetPage.locator('[data-testid="hand-card"] .card-live-stat-health').first().innerText(), "1");
     await missingAssetPage.close();
     const initialRevisionText = await page.locator('[data-testid="revision"]').innerText();
     await page.locator('[data-testid="hand-card"] [data-testid="card-inspect"]').first().click();
@@ -514,6 +518,89 @@ async function main() {
     await mockPage.locator("#game-over-dismiss").click();
     await mockPage.locator('[data-testid="game-over"]').waitFor({ state: "hidden", timeout });
     await mockPage.screenshot({ path: path.join(artifacts, "web-gui-mocked-extras.png"), fullPage: true });
+
+    // Isolate visual hand states at the JSON boundary.  The Python snapshot
+    // test checks the real engine values; this checks their browser treatment.
+    const visual = JSON.parse(JSON.stringify(mulliganState));
+    visual.revision += 150;
+    visual.observation.phase = "MAIN";
+    visual.observation.self.mana = 5;
+    visual.observation.self.max_mana = 5;
+    const baseHand = visual.observation.self.hand[0];
+    const spellHand = { ...baseHand, entity_id: 91502, card_id: "CS2_029", name: "Fireball",
+      cost: 2, printed_cost: 4, powered_up: false };
+    for (const field of ["atk", "printed_atk", "health", "max_health", "printed_health",
+      "durability", "printed_durability"]) delete spellHand[field];
+    visual.observation.self.hand = [
+      { ...baseHand, entity_id: 91501, cost: 3, printed_cost: 2, atk: 4, printed_atk: 3,
+        max_health: 1, printed_health: 2, powered_up: true },
+      spellHand,
+      { ...baseHand, entity_id: 91503, cost: 6, printed_cost: 5, atk: 1, printed_atk: 2,
+        max_health: 1, printed_health: 2, powered_up: true },
+    ];
+    visual.legal_actions = [
+      { schema_version: 1, type: "PLAY_CARD", source_entity_id: 91501, position: 0 },
+      { schema_version: 1, type: "PLAY_CARD", source_entity_id: 91502,
+        target_entity_id: visual.observation.opponent.hero.entity_id },
+      { schema_version: 1, type: "END_TURN" },
+    ];
+    visual.events = [];
+    visual.outcome = null;
+    const visualPage = await context.newPage();
+    await visualPage.route("**/api/state", (route) => route.fulfill({
+      status: 200, contentType: "application/json; charset=utf-8", body: JSON.stringify(visual),
+    }));
+    await visualPage.goto(endpoint.url, { waitUntil: "domcontentloaded" });
+    await waitForPhase(visualPage, "主阶段");
+    const activeHand = visualPage.locator('[data-testid="hand-card"][data-entity-id="91501"]');
+    const cheaperHand = visualPage.locator('[data-testid="hand-card"][data-entity-id="91502"]');
+    const blockedHand = visualPage.locator('[data-testid="hand-card"][data-entity-id="91503"]');
+    assert(await activeHand.evaluate((node) => node.classList.contains("playable") && node.classList.contains("powered-up")),
+      "a legal powered-up card must have the yellow state");
+    assert(await cheaperHand.evaluate((node) => node.classList.contains("playable") && !node.classList.contains("powered-up")),
+      "a legal card without its extra condition must have the green state");
+    assert(await blockedHand.evaluate((node) => !node.classList.contains("playable") && !node.classList.contains("powered-up")),
+      "an unplayable card must not glow even when its condition is met");
+    assert.equal(await activeHand.locator(".card-live-stat-cost.cost-higher").innerText(), "3");
+    assert.equal(await activeHand.locator(".card-live-stat-attack.stat-higher").innerText(), "4");
+    assert.equal(await activeHand.locator(".card-live-stat-health.stat-lower").innerText(), "1");
+    assert.equal(await cheaperHand.locator(".card-live-stat-cost.cost-lower").innerText(), "2");
+    assert.equal(await cheaperHand.locator(".card-live-stat-attack, .card-live-stat-health").count(), 0,
+      "a spell should not show minion stats");
+    assert.equal(await blockedHand.locator(".card-live-stat-cost.cost-higher").innerText(), "6");
+    assert.equal(await blockedHand.locator(".card-live-stat-attack.stat-lower").innerText(), "1");
+    assert.match(await activeHand.getAttribute("aria-label"), /费用 3.*攻击 4.*生命 1/);
+    const visualColors = await visualPage.evaluate(() => {
+      const css = (selector, property) => getComputedStyle(document.querySelector(selector))[property];
+      return {
+        poweredGlow: css('[data-entity-id="91501"]', "filter"),
+        playableGlow: css('[data-entity-id="91502"]', "filter"),
+        increasedCost: css('[data-entity-id="91501"] .card-live-stat-cost', "color"),
+        increasedAttack: css('[data-entity-id="91501"] .card-live-stat-attack', "color"),
+        decreasedHealth: css('[data-entity-id="91501"] .card-live-stat-health', "color"),
+        reducedCost: css('[data-entity-id="91502"] .card-live-stat-cost', "color"),
+      };
+    });
+    assert.match(visualColors.poweredGlow, /244, 186, 89/, "powered-up glow should be yellow");
+    assert.match(visualColors.playableGlow, /120, 219, 116/, "ordinary playable glow should be green");
+    assert.equal(visualColors.increasedCost, "rgb(255, 143, 124)");
+    assert.equal(visualColors.increasedAttack, "rgb(161, 239, 168)");
+    assert.equal(visualColors.decreasedHealth, "rgb(255, 255, 255)");
+    assert.equal(visualColors.reducedCost, "rgb(161, 239, 168)");
+    await activeHand.locator('[data-testid="card-inspect"]').focus();
+    await visualPage.keyboard.press("Enter");
+    await visualPage.locator("#card-modal").waitFor({ state: "visible", timeout });
+    assert.equal(await visualPage.locator("#modal-art .card-live-stat-cost.cost-higher").innerText(), "3");
+    assert.equal(await visualPage.locator("#modal-art .card-live-stat-attack.stat-higher").innerText(), "4");
+    assert.equal(await visualPage.locator("#modal-art .card-live-stat-health.stat-lower").innerText(), "1");
+    assert.equal(await visualPage.locator("#modal-stats .stat.health strong").innerText(), "1");
+    await visualPage.screenshot({ path: path.join(artifacts, "web-gui-hand-live-stats-modal.png"), fullPage: true });
+    await visualPage.locator("#modal-close").click();
+    await visualPage.screenshot({ path: path.join(artifacts, "web-gui-hand-live-stats.png"), fullPage: true });
+    await visualPage.setViewportSize({ width: 390, height: 844 });
+    await assertNoHorizontalOverflow(visualPage, "mobile hand live stats");
+    await visualPage.screenshot({ path: path.join(artifacts, "web-gui-hand-live-stats-mobile.png"), fullPage: true });
+    await visualPage.close();
 
     // Near board capacity, every legal insertion slot must remain reachable
     // on a narrow screen.  Mock only the JSON boundary, then inspect and
