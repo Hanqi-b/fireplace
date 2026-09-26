@@ -848,7 +848,7 @@
         (power.cost === undefined || power.cost === null ? "" : " · 费用 " + String(power.cost));
       copy.appendChild(powerSummary);
     }
-    copy.appendChild(createCharacterStats(hero, true));
+    copy.appendChild(createCharacterStats(hero, safeNumber(hero.atk, 0) > 0));
     wrapper.appendChild(copy);
     container.appendChild(wrapper);
   }
@@ -917,7 +917,7 @@
       var content = document.createElement("div");
       content.className = "card-content";
       content.appendChild(cardTitle(card));
-      content.appendChild(createCharacterStats(card, true));
+      content.appendChild(createCharacterStats(card, true, true));
       content.appendChild(createKeywordBadges(card, own));
       appendCardText(content, card);
       wrapper.appendChild(content);
@@ -1177,17 +1177,22 @@
     container.appendChild(node);
   }
 
-  function createCharacterStats(character, includeAttack) {
+  function createCharacterStats(character, includeAttack, compactHealth) {
     var stats = document.createElement("div");
     stats.className = "stats";
     if (includeAttack && character.atk !== undefined) {
       stats.appendChild(createStat("attack", "攻击", character.atk));
     }
     if (character.health !== undefined) {
-      var health = character.max_health !== undefined && character.max_health !== null
+      var health = !compactHealth && character.max_health !== undefined && character.max_health !== null
         ? String(character.health) + " / " + String(character.max_health)
         : character.health;
-      stats.appendChild(createStat("health", "生命", health));
+      var healthStat = createStat("health", "生命", health);
+      if (compactHealth && character.max_health !== undefined && character.max_health !== null) {
+        healthStat.setAttribute("aria-label", "生命 " + String(character.health) + " / " + String(character.max_health));
+        healthStat.title = "生命 " + String(character.health) + " / " + String(character.max_health);
+      }
+      stats.appendChild(healthStat);
     }
     if (character.armor !== undefined && character.armor) {
       stats.appendChild(createStat("armor", "护甲", character.armor));

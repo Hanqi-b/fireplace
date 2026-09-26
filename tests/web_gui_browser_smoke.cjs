@@ -214,6 +214,48 @@ async function assertNoHorizontalOverflow(page, label) {
   return metrics;
 }
 
+async function assertBoardReadability(page, label) {
+  const metrics = await page.evaluate(() => {
+    const bounds = (selector) => [...document.querySelectorAll(selector)]
+      .map((node) => node.getBoundingClientRect());
+    const table = document.querySelector(".table").getBoundingClientRect();
+    const opponent = bounds("#opponent-board .board-card, #opponent-board .board-card .stat");
+    const own = bounds("#self-board .board-card, #self-board .board-card .stat");
+    const hand = bounds("#hand .hand-card");
+    const mana = document.querySelector("#mana-value").getBoundingClientRect();
+    const heroHealth = document.querySelector("#self-hero-row .stat.health").getBoundingClientRect();
+    const powerLabel = document.querySelector("#hero-power-row .power-copy").getBoundingClientRect();
+    const overlapping = (left, right) => left.left < right.right && left.right > right.left &&
+      left.top < right.bottom && left.bottom > right.top;
+    return {
+      divider: table.top + table.height * .45,
+      opponentBottom: Math.max(...opponent.map((rect) => rect.bottom)),
+      ownTop: Math.min(...own.map((rect) => rect.top)),
+      handTop: Math.min(...hand.map((rect) => rect.top)),
+      manaBottom: mana.bottom,
+      heroHealthBottom: heroHealth.bottom,
+      healthOverlapsPowerLabel: overlapping(heroHealth, powerLabel),
+      boardHealthTexts: [...document.querySelectorAll("#self-board .stat.health strong")]
+        .map((node) => node.textContent.trim()),
+      fullHealthLabel: document.querySelector("#self-board .stat.health")?.getAttribute("aria-label"),
+    };
+  });
+  assert(metrics.opponentBottom < metrics.divider - 4,
+    `${label}: opponent minions cross the scene divider: ${JSON.stringify(metrics)}`);
+  assert(metrics.ownTop > metrics.divider + 4,
+    `${label}: own minions cross the scene divider: ${JSON.stringify(metrics)}`);
+  assert(metrics.manaBottom < metrics.handTop - 2,
+    `${label}: hand covers own mana: ${JSON.stringify(metrics)}`);
+  assert(metrics.heroHealthBottom < metrics.handTop - 2,
+    `${label}: hand covers own hero health: ${JSON.stringify(metrics)}`);
+  assert(!metrics.healthOverlapsPowerLabel,
+    `${label}: hero health obscures hero power text: ${JSON.stringify(metrics)}`);
+  assert(metrics.boardHealthTexts.length && metrics.boardHealthTexts.every((text) => text === "1"),
+    `${label}: minion health badge must show one readable number: ${JSON.stringify(metrics)}`);
+  assert.match(metrics.fullHealthLabel || "", /生命 1 \/ 1/);
+  return metrics;
+}
+
 async function main() {
   fs.mkdirSync(artifacts, { recursive: true });
   const fixture = startFixture();
@@ -485,9 +527,13 @@ async function main() {
       ...mulliganState.observation.self.hand[0], entity_id: 91000 + index,
       atk: 1, health: 1, max_health: 1, can_attack: false,
     }));
-    crowded.observation.self.hand = [{
-      ...mulliganState.observation.self.hand[0], entity_id: 91020,
-    }];
+    crowded.observation.opponent.board = Array.from({ length: 6 }, (_, index) => ({
+      ...mulliganState.observation.self.hand[0], entity_id: 91100 + index,
+      atk: 1, health: 1, max_health: 1, can_attack: false,
+    }));
+    crowded.observation.self.hand = Array.from({ length: 10 }, (_, index) => ({
+      ...mulliganState.observation.self.hand[0], entity_id: 91020 + index,
+    }));
     crowded.legal_actions = Array.from({ length: 7 }, (_, position) => ({
       schema_version: 1, type: "PLAY_CARD", source_entity_id: 91020, position,
     }));
@@ -504,12 +550,19 @@ async function main() {
       crowdedPost = route.request().postDataJSON();
       const after = JSON.parse(JSON.stringify(crowded));
       after.revision += 1;
-      after.observation.self.board.push(after.observation.self.hand.pop());
+      after.observation.self.board.push(after.observation.self.hand.shift());
       after.legal_actions = [];
       route.fulfill({ status: 200, contentType: "application/json; charset=utf-8", body: JSON.stringify(after) });
     });
     await crowdedPage.goto(endpoint.url, { waitUntil: "domcontentloaded" });
     await waitForPhase(crowdedPage, "主阶段");
+    for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 720 },
+      { width: 1440, height: 900 }, { width: 1680, height: 928 }]) {
+      await crowdedPage.setViewportSize(viewport);
+      await assertBoardReadability(crowdedPage, `${viewport.width}x${viewport.height} crowded board`);
+    }
+    await crowdedPage.screenshot({ path: path.join(artifacts, "web-gui-desktop-crowded-board.png"), fullPage: true });
+    await crowdedPage.setViewportSize({ width: 390, height: 844 });
     await crowdedPage.locator('[data-testid="hand-card"][data-entity-id="91020"]').click();
     assert.equal(await crowdedPage.locator("#self-board .board-slot").count(), 7);
     for (let position = 0; position <= 6; position += 1) {
