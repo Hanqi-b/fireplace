@@ -14,10 +14,12 @@ import pytest
 from fireplace.web_gui.assets import AssetDescription, AssetPayload, AssetService
 
 
-def _wait_for_description(service: AssetService, card_id: str) -> AssetDescription:
+def _wait_for_description(
+    service: AssetService, card_id: str, locale: str = "zhCN"
+) -> AssetDescription:
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
-        found = service.describe_visible([card_id]).get(card_id)
+        found = service.describe_visible([card_id], locale=locale).get(card_id)
         if found is not None:
             return found
         time.sleep(0.01)
@@ -76,6 +78,65 @@ def test_description_requests_for_one_card_share_inflight_work():
         release.set()
         assert _wait_for_description(service, "CS2_231").name == "小精灵"
         assert calls == 1
+
+
+def test_description_cache_is_separate_per_locale():
+    calls: list[str] = []
+
+    class LocalizedResolver:
+        def describe(self, card_id, *, locale):
+            calls.append(locale)
+            if locale == "enUS":
+                return SimpleNamespace(name="Wisp", text="A small spirit.", locale="enUS")
+            return SimpleNamespace(name="小精灵", text="一个小精灵。", locale="zhCN")
+
+    with AssetService(resolver=LocalizedResolver()) as service:
+        chinese = _wait_for_description(service, "CS2_231", locale="zhCN")
+        english = _wait_for_description(service, "CS2_231", locale="enUS")
+        assert chinese.name == "小精灵"
+        assert english.name == "Wisp"
+        assert calls.count("zhCN") == 1
+        assert calls.count("enUS") == 1
+
+        # Both localized values stay available after the language switch.
+        assert service.describe_visible(["CS2_231"], locale="zhCN")["CS2_231"] == chinese
+        assert service.describe_visible(["CS2_231"], locale="enUS")["CS2_231"] == english
+
+
+def test_old_resolver_is_not_used_for_english_description_or_render():
+    image_path = Path(__file__).resolve().parent / "fixtures" / "does-not-exist.png"
+
+    class OldChineseResolver:
+        def describe(self, card_id):
+            return SimpleNamespace(name="中文卡", text="中文文本", locale="zhCN")
+
+        def resolve(self, card_id, *, kind):
+            return SimpleNamespace(
+                path=image_path,
+                media_type="image/png",
+                locale="zhCN",
+                is_placeholder=False,
+            )
+
+    with AssetService(resolver=OldChineseResolver()) as service:
+        assert service.describe_visible(["CS2_231"], locale="enUS") == {}
+        # The old signature is retained for default Chinese calls.
+        assert _wait_for_description(service, "CS2_231", locale="zhCN").name == "中文卡"
+        assert service.request_asset("CS2_231", locale="enUS").result(timeout=5) is None
+
+
+def test_service_rejects_a_chinese_render_returned_for_english():
+    class LocaleIgnoringResolver:
+        def resolve(self, card_id, *, kind, locale):
+            return SimpleNamespace(
+                path=card_assets.PLACEHOLDER_PATH,
+                media_type="image/png",
+                locale="zhCN",
+                is_placeholder=False,
+            )
+
+    with AssetService(resolver=LocaleIgnoringResolver()) as service:
+        assert service.request_asset("CS2_231", locale="enUS").result(timeout=5) is None
 
 
 def test_real_resolver_returns_chinese_description_and_external_asset_cache(
@@ -157,6 +218,14 @@ def test_resolver_exception_returns_none_and_does_not_leak_future():
         # A failed resolve is removed from the in-flight map and can be
         # retried without accumulating completed Future objects.
         assert service.request_asset("CS2_231").result(timeout=5) is None
+
+
+def test_invalid_service_locale_is_rejected():
+    with AssetService(resolver=None) as service:
+        with pytest.raises(ValueError):
+            service.describe_visible(["CS2_231"], locale="frFR")
+        with pytest.raises(ValueError):
+            service.request_asset("CS2_231", locale="frFR")
 
 
 def test_real_resolver_offline_uses_its_placeholder(tmp_path: Path, monkeypatch):

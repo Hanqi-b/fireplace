@@ -58,7 +58,7 @@ source of documentation, along with the actual code.
 
 ### Local browser game
 
-Install the package with `pip install .`, then start a single-player game:
+Install the package with `pip install .`, then start the local browser app:
 
 ```bash
 fireplace-web --seed 7
@@ -66,10 +66,16 @@ fireplace-web --seed 7
 
 Open [http://127.0.0.1:8765/](http://127.0.0.1:8765/) on the same computer.
 The equivalent source-checkout command is `python3 examples/play_web.py --seed 7`;
-`python3 -m fireplace.web_gui` also works. Use `--opponent heuristic` for the
-rule-based opponent or `--port 8766` to choose another port. The server binds
-to `127.0.0.1` and keeps one game in memory; restarting it begins a new game.
-Press Ctrl+C in the terminal to stop the server.
+`python3 -m fireplace.web_gui` also works. Use `--port 8766` to choose another
+port. The server binds to `127.0.0.1`. Enter a local nickname, choose Chinese
+or English and a Random or Heuristic AI opponent, then start a match. Each match
+draws random classes and 30-card decks. The nickname and language preference are
+saved only in this browser; there is no password or network account. Language
+can be changed on the start screen and stays fixed during a match. After Game
+Over, return to the start screen to change settings or play again without
+restarting the server. `--opponent heuristic` sets the initial opponent choice
+and `--seed` makes the first game's random setup reproducible. Press Ctrl+C in
+the terminal to stop the server.
 
 The browser receives only the human player's Observation, current legal Action
 values and a filtered public event log. Click cards, characters and offered
@@ -84,8 +90,9 @@ convenience action buttons and a complete legal-action fallback are below the
 battlefield, so they do not cover play. The narrow layout keeps the hand in a
 horizontal strip. The scene is a local static image; no gameplay information is
 embedded in it.
-Localized card text comes from `CardDefs.xml`. Card images are fetched by the
-local server as renders, art or tiles and cached outside the repository in
+Localized card text comes from `CardDefs.xml` in the selected match language.
+Card images are fetched by the local server as renders, art or tiles and cached
+outside the repository in
 `$XDG_CACHE_HOME/card_assets` (or `~/.cache/card_assets`). A missing image or
 unavailable asset package falls back to a CSS card placeholder. The browser
 does not request external card-image URLs. The first uncached image may take
@@ -99,8 +106,12 @@ a deterministic real-engine match through the GUI, including a stale action,
 and writes desktop, narrow-window and Game Over screenshots under
 `/tmp/fireplace-web-gui-artifacts` by default.
 Run `node tests/web_gui_full_match.cjs` with the same environment variables to
-play complete browser matches against both Random and Heuristic opponents,
-using battlefield clicks and the end-turn button across multiple turns.
+play complete browser matches against Random in Chinese and Heuristic in
+English on one local server. It uses battlefield clicks and the end-turn button
+across multiple turns, returns to the start screen after each result, and checks
+that an action from the earlier session is rejected. Run
+`node tests/web_gui_locale_browser.cjs` for a short offline browser check that
+card names, rules text, and renders follow the selected language.
 
 ### Terminal game
 

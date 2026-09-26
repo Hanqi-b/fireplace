@@ -23,7 +23,7 @@ from fireplace.game import Game
 from fireplace.player import Player
 from fireplace.web_gui import server as web_server
 from fireplace.web_gui.factory import build_game
-from fireplace.web_gui.server import WebGame, make_server
+from fireplace.web_gui.server import WebGame, WebGameManager, make_server
 
 
 cards.db.initialize()
@@ -34,7 +34,7 @@ def web_game():
     servers = []
 
     def create(*, hero=CardClass.MAGE.default_hero, seed=3, asset_resolver=None,
-               deck_size=10, opponent_policy="random"):
+               deck_size=10, opponent_policy="random", locale="zhCN"):
         human = Player("Human", ["CS2_231"] * deck_size, hero)
         opponent = Player("Computer", ["CS2_231"] * deck_size, hero)
         game = Game((human, opponent), seed=seed)
@@ -42,6 +42,7 @@ def web_game():
             GameSession(game, {}), human,
             HeuristicAgent() if opponent_policy == "heuristic" else RandomAgent(seed=seed),
             asset_resolver=asset_resolver,
+            locale=locale,
         )
         server = make_server(app, host="127.0.0.1", port=0)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -249,8 +250,78 @@ def test_opponent_secret_stays_hidden_in_snapshot_log_and_assets(web_game):
     )
     assert "source_name" not in hidden_play
     assert "source_entity_id" not in hidden_play
+    hidden_internal = next(
+        event for event in app._events
+        if event["actor"] == "opponent" and event["type"] == "PLAY_CARD"
+    )
+    assert "_source_card_id" not in hidden_internal
     status, missing = request(base, "/assets/render/EX1_287")
     assert status == 404
+
+
+def test_delayed_locale_description_updates_historical_event_without_private_ids(
+    web_game,
+):
+    started = threading.Event()
+    release = threading.Event()
+
+    class DelayedResolver:
+        def describe(self, card_id, *, locale):
+            del card_id
+            started.set()
+            assert release.wait(timeout=5)
+            if locale == "zhCN":
+                return SimpleNamespace(name="小精灵", text="一个小精灵。", locale=locale)
+            return SimpleNamespace(name="Wisp", text="A small spirit.", locale=locale)
+
+        def resolve(self, card_id, *, kind, locale):
+            del card_id, kind, locale
+            return None
+
+    app, human, _opponent, base = web_game(
+        asset_resolver=DelayedResolver(), locale="zhCN"
+    )
+    try:
+        assert started.wait(timeout=5)
+        status, state = request(base)
+        assert status == 200
+        status, state = submit(base, state, action(state, "MULLIGAN", mulligan_entity_ids=[]))
+        assert status == 200 and state["observation"]["phase"] == "MAIN"
+        human.max_mana = 10
+        card = human.give("CS2_231")
+        _, state = request(base)
+        status, state = submit(
+            base,
+            state,
+            action(state, "PLAY_CARD", source_entity_id=card.entity_id, position=0),
+        )
+        assert status == 200
+        event = next(
+            event for event in state["events"]
+            if event["actor"] == "self"
+            and event["type"] == "PLAY_CARD"
+            and event.get("source_entity_id") == card.entity_id
+        )
+        assert event["source_name"] != "小精灵"
+        assert "_source_card_id" not in json.dumps(state)
+
+        release.set()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            localized = app.snapshot()
+            event = next(
+                event for event in localized["events"]
+                if event["actor"] == "self"
+                and event["type"] == "PLAY_CARD"
+                and event.get("source_entity_id") == card.entity_id
+            )
+            if event.get("source_name") == "小精灵":
+                break
+            time.sleep(0.02)
+        assert event["source_name"] == "小精灵"
+        assert "_source_card_id" not in json.dumps(localized)
+    finally:
+        release.set()
 
 
 def test_cross_origin_and_non_json_actions_are_rejected(web_game):
@@ -359,6 +430,52 @@ def test_real_resolver_chinese_text_and_external_cached_image(web_game, tmp_path
     status, media_type, data = wait_asset(base, "/assets/render/CS2_231")
     assert status == 200 and media_type == "image/png" and data == image
     assert requested and "/zhCN/" in requested[0]
+    assert any(cache_dir.iterdir())
+
+
+def test_real_resolver_english_text_and_render_use_english_locale(
+    web_game, tmp_path, monkeypatch
+):
+    image = card_assets.PLACEHOLDER_PATH.read_bytes()
+    requested = []
+
+    def opener(url, *, timeout):
+        requested.append(url)
+        return io.BytesIO(image)
+
+    monkeypatch.setattr(card_assets, "URL_OPENER", opener)
+    cache_dir = tmp_path / "outside-repository-cache-enUS"
+    resolver = AssetResolver(cache_dir=cache_dir)
+    # Seed only the Chinese render first.  The English match must still ask
+    # for its own render locale rather than reusing or probing zhCN.
+    resolver.resolve("CS2_029", kind="render", locale="zhCN")
+    requested.clear()
+    _, human, _opponent, base = web_game(
+        asset_resolver=resolver, locale="enUS"
+    )
+    ready(base)
+    human.give("CS2_029")
+    deadline = time.monotonic() + 5
+    while True:
+        status, state = request(base)
+        assert status == 200
+        english_card = next(
+            card
+            for card in state["observation"]["self"]["hand"]
+            if card["card_id"] == "CS2_029"
+        )
+        if (
+            english_card.get("name") == "Fireball"
+            and english_card.get("text") == "Deal $6 damage."
+        ) or time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
+    assert english_card["name"] == "Fireball"
+    assert english_card["text"] == "Deal $6 damage."
+    status, media_type, data = wait_asset(base, "/assets/render/CS2_029")
+    assert status == 200 and media_type == "image/png" and data == image
+    assert requested and any("/enUS/" in url for url in requested)
+    assert not any("/zhCN/" in url for url in requested)
     assert any(cache_dir.iterdir())
 
 
@@ -525,3 +642,195 @@ def test_real_draft_reaches_game_over_through_value_actions(monkeypatch, opponen
         assert len(state["events"]) > 40
     finally:
         app.close()
+
+
+@pytest.fixture
+def lobby_server():
+    servers = []
+
+    def create(*, seed=11, opponent="random", asset_resolver=None):
+        app = WebGameManager(
+            seed=seed, opponent=opponent, asset_resolver=asset_resolver
+        )
+        server = make_server(app, host="127.0.0.1", port=0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        servers.append((server, thread, app))
+        return app, f"http://127.0.0.1:{server.server_port}"
+
+    yield create
+    for server, thread, _app in servers:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def _finish_lobby_match(app, base, state=None):
+    if state is None:
+        status, state = request(base)
+        assert status == 200 and state["mode"] == "lobby"
+        status, state = request(
+            base,
+            "/api/start",
+            {"nickname": "Alice", "opponent": "random", "locale": "enUS"},
+        )
+        assert status == 200 and state["mode"] == "match"
+    status, state = submit(base, state, action(state, "MULLIGAN", mulligan_entity_ids=[]))
+    assert status == 200 and state["observation"]["phase"] == "MAIN"
+    active = app.active
+    assert active is not None
+    active.human.max_mana = 10
+    opponent = next(player for player in active.session.game.players if player is not active.human)
+    opponent.hero.damage = opponent.hero.max_health - 1
+    fireball = active.human.give("CS2_029")
+    _, state = request(base)
+    status, state = submit(
+        base,
+        state,
+        action(
+            state,
+            "PLAY_CARD",
+            source_entity_id=fireball.entity_id,
+            target_entity_id=opponent.hero.entity_id,
+        ),
+    )
+    assert status == 200 and state["outcome"] is not None
+    return state
+
+
+def test_lobby_start_locale_nickname_and_terminal_return(lobby_server):
+    app, base = lobby_server(opponent="heuristic")
+    status, lobby = request(base)
+    assert status == 200
+    assert lobby == {"mode": "lobby", "opponent": "heuristic"}
+
+    status, started = request(
+        base,
+        "/api/start",
+        {"nickname": "  Alice  ", "opponent": "heuristic", "locale": "enUS"},
+    )
+    assert status == 200
+    assert started["mode"] == "match"
+    assert started["locale"] == "enUS"
+    assert started["nickname"] == "Alice"
+    assert started["observation"]["phase"] == "MULLIGAN"
+
+    status, rejected = request(
+        base,
+        "/api/start",
+        {"nickname": "Second", "opponent": "random", "locale": "zhCN"},
+    )
+    assert status == 409 and rejected["session_id"] == started["session_id"]
+
+    terminal = _finish_lobby_match(app, base, state=started)
+    status, lobby = request(
+        base,
+        "/api/return",
+        {"session_id": terminal["session_id"], "revision": terminal["revision"]},
+    )
+    assert status == 200 and lobby["mode"] == "lobby"
+
+
+def test_lobby_rejects_stale_actions_after_return_and_new_match(lobby_server):
+    app, base = lobby_server(seed=21)
+    first_terminal = _finish_lobby_match(app, base)
+    old_action = action(first_terminal, "END_TURN") if first_terminal["legal_actions"] else {
+        "schema_version": 1,
+        "type": "END_TURN",
+    }
+    status, lobby = request(
+        base,
+        "/api/return",
+        {"session_id": first_terminal["session_id"], "revision": first_terminal["revision"]},
+    )
+    assert status == 200 and lobby["mode"] == "lobby"
+
+    status, stale = request(
+        base,
+        "/api/action",
+        {
+            "session_id": first_terminal["session_id"],
+            "revision": first_terminal["revision"],
+            "action": old_action,
+        },
+    )
+    assert status == 409 and stale["mode"] == "lobby"
+
+    status, second = request(
+        base,
+        "/api/start",
+        {"nickname": "Bob", "opponent": "random", "locale": "zhCN"},
+    )
+    assert status == 200 and second["session_id"] != first_terminal["session_id"]
+    status, stale = request(
+        base,
+        "/api/action",
+        {
+            "session_id": first_terminal["session_id"],
+            "revision": first_terminal["revision"],
+            "action": old_action,
+        },
+    )
+    assert status == 409
+    assert stale["session_id"] == second["session_id"]
+
+
+def test_lobby_start_and_return_keep_local_http_guards(lobby_server):
+    _app, base = lobby_server()
+    status, rejected = request(
+        base,
+        "/api/start",
+        {"nickname": "Alice", "opponent": "random", "locale": "zhCN"},
+        {"Origin": "http://attacker.example"},
+    )
+    assert status == 403 and rejected["mode"] == "lobby"
+    status, rejected = request(
+        base,
+        "/api/start",
+        {"nickname": "Alice", "opponent": "random", "locale": "zhCN"},
+        {"Content-Type": "text/plain"},
+    )
+    assert status == 415 and rejected["mode"] == "lobby"
+
+
+def test_return_to_lobby_does_not_wait_for_slow_asset_resolver(lobby_server):
+    resolving = threading.Event()
+    release = threading.Event()
+
+    class SlowResolver:
+        def describe(self, card_id, *, locale):
+            del card_id, locale
+            return None
+
+        def resolve(self, card_id, *, kind, locale):
+            del card_id, kind, locale
+            resolving.set()
+            release.wait(timeout=10)
+            return None
+
+    app, base = lobby_server(asset_resolver=SlowResolver())
+    terminal = _finish_lobby_match(app, base)
+    card_id = terminal["observation"]["self"]["hand"][0]["card_id"]
+    try:
+        with urlopen(base + "/assets/render/" + card_id, timeout=3) as response:
+            assert response.status == 202
+            response.read()
+        assert resolving.wait(timeout=3)
+
+        started = time.monotonic()
+        status, lobby = request(
+            base,
+            "/api/return",
+            {"session_id": terminal["session_id"], "revision": terminal["revision"]},
+        )
+        elapsed = time.monotonic() - started
+        assert status == 200 and lobby["mode"] == "lobby"
+        assert elapsed < 1.0
+
+        started = time.monotonic()
+        status, current = request(base)
+        elapsed = time.monotonic() - started
+        assert status == 200 and current["mode"] == "lobby"
+        assert elapsed < 1.0
+    finally:
+        release.set()

@@ -43,6 +43,14 @@ CARD_DEFS = """\
       <enUS>Unnamed card text.</enUS>
     </Tag>
   </Entity>
+  <Entity CardID="DEMO_004" ID="4">
+    <Tag name="CARDNAME" type="LocString">
+      <zhCN>仅中文卡</zhCN>
+    </Tag>
+    <Tag name="CARDTEXT" type="LocString">
+      <zhCN>仅中文文本。</zhCN>
+    </Tag>
+  </Entity>
 </CardDefs>
 """
 
@@ -144,6 +152,28 @@ def test_describe_falls_back_to_english_and_card_id(card_defs_path, tmp_path):
     assert unnamed.locale == "und"
 
 
+def test_describe_locale_keeps_english_mode_free_of_chinese_fallback(
+    card_defs_path, tmp_path
+):
+    resolver = AssetResolver(cache_dir=tmp_path / "cache")
+
+    english = resolver.describe("DEMO_001", locale="enUS")
+    assert english.name == "Sample Card"
+    assert english.text == "Summon a minion."
+    assert english.locale == "enUS"
+
+    # Chinese mode may use English when a translation is absent.
+    chinese_fallback = resolver.describe("DEMO_002", locale="zhCN")
+    assert chinese_fallback.name == "English Fallback"
+    assert chinese_fallback.locale == "enUS"
+
+    # English mode uses stable IDs when the English catalog has no value.
+    english_missing = resolver.describe("DEMO_004", locale="enUS")
+    assert english_missing.name == "DEMO_004"
+    assert english_missing.text == "DEMO_004"
+    assert english_missing.locale == "und"
+
+
 def test_render_tries_zhcn_then_enus_before_using_download(tmp_path, monkeypatch):
     requested = []
 
@@ -220,6 +250,32 @@ def test_render_skips_invalid_image_response_and_uses_next_locale(
     assert result.path.read_bytes() == _png_bytes()
 
 
+def test_english_render_does_not_use_chinese_cache_or_download_fallback(
+    tmp_path, monkeypatch
+):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    # A valid Chinese image must not satisfy a later English request.
+    (cache / "DEMO_001.render.zhCN.png").write_bytes(_png_bytes())
+    requested = []
+
+    def fake_urlopen(request, timeout=None):
+        url = _url_of(request)
+        requested.append(url)
+        raise _not_found(url)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    result = AssetResolver(cache_dir=cache).resolve(
+        "DEMO_001", kind="render", locale="enUS"
+    )
+
+    assert result.is_placeholder is True
+    assert result.locale is None
+    assert requested == [
+        "https://art.hearthstonejson.com/v1/render/latest/enUS/256x/DEMO_001.png"
+    ]
+
+
 def test_render_rejects_png_without_image_data(tmp_path, monkeypatch):
     requested = []
     valid = _png_bytes()
@@ -238,7 +294,9 @@ def test_render_rejects_png_without_image_data(tmp_path, monkeypatch):
     assert len(requested) == 2
 
 
-def test_cached_english_render_skips_later_chinese_timeout(tmp_path, monkeypatch):
+def test_cached_english_render_retries_preferred_chinese_before_fallback(
+    tmp_path, monkeypatch
+):
     requested = []
 
     def fake_urlopen(request, timeout=None):
@@ -255,7 +313,34 @@ def test_cached_english_render_skips_later_chinese_timeout(tmp_path, monkeypatch
 
     assert first.locale == again.locale == "enUS"
     assert first.path == again.path
-    assert len(requested) == 2
+    assert len(requested) == 3
+    assert "/zhCN/" in requested[2]
+
+
+def test_chinese_render_prefers_new_chinese_download_over_cached_english(
+    tmp_path, monkeypatch
+):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "DEMO_001.render.enUS.png").write_bytes(_png_bytes())
+    requested = []
+
+    def fake_urlopen(request, timeout=None):
+        url = _url_of(request)
+        requested.append(url)
+        assert "/zhCN/" in url
+        return _Response(_png_bytes())
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    result = AssetResolver(cache_dir=cache).resolve(
+        "DEMO_001", kind="render", locale="zhCN"
+    )
+
+    assert result.locale == "zhCN"
+    assert result.is_placeholder is False
+    assert requested == [
+        "https://art.hearthstonejson.com/v1/render/latest/zhCN/256x/DEMO_001.png"
+    ]
 
 
 def test_art_and_tile_use_language_neutral_urls(tmp_path, monkeypatch):
@@ -395,3 +480,12 @@ def test_invalid_asset_kind_is_rejected(tmp_path):
     resolver = AssetResolver(cache_dir=tmp_path / "cache")
     with pytest.raises(ValueError):
         resolver.resolve("DEMO_001", kind="thumbnail")
+
+
+@pytest.mark.parametrize("locale", ["frFR", "", None, 123])
+def test_invalid_locale_is_rejected(locale, tmp_path):
+    resolver = AssetResolver(cache_dir=tmp_path / "cache")
+    with pytest.raises(ValueError):
+        resolver.describe("DEMO_001", locale=locale)
+    with pytest.raises(ValueError):
+        resolver.resolve("DEMO_001", locale=locale)

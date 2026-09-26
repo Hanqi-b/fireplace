@@ -3,13 +3,21 @@
 
   var API_STATE = "/api/state";
   var API_ACTION = "/api/action";
+  var API_START = "/api/start";
+  var API_RETURN = "/api/return";
   var Model = window.FireplaceActionModel;
   var elements = {};
   var guiState = createGuiState(Model);
   var busy = false;
+  var currentLocale = normalizeLocale(readStored("fireplace.locale", "zhCN"));
+  var requestGeneration = 0;
+  var currentMode = "lobby";
+  var currentOpponent = "random";
+  var lobbyStage = "login";
   var noticeTimer = null;
   var pollTimer = null;
   var assetRequests = new Map();
+  var inspectedCardRef = null;
   var attackPointer = null;
   var attackLine = null;
   var attackStroke = null;
@@ -22,14 +30,49 @@
     });
   });
 
-  var TYPE_LABELS = {
-    MULLIGAN: "换牌",
-    CHOOSE: "选择",
-    PLAY_CARD: "出牌",
-    ATTACK: "攻击",
-    USE_HERO_POWER: "英雄技能",
-    END_TURN: "结束回合",
+  var FALLBACK_COPY = {
+    "phase.MULLIGAN": "换牌",
+    "phase.CHOICE": "选择",
+    "phase.MAIN": "主阶段",
+    "phase.GAME_OVER": "对局结束",
+    "unknownCard": "未知卡牌",
+    "unknownAction": "未知动作",
+    "target": "目标",
   };
+
+  function normalizeLocale(locale) {
+    if (window.FireplaceI18n && typeof window.FireplaceI18n.normalizeLocale === "function") {
+      return window.FireplaceI18n.normalizeLocale(locale);
+    }
+    return locale === "enUS" ? "enUS" : "zhCN";
+  }
+
+  function tr(key, variables) {
+    if (window.FireplaceI18n && typeof window.FireplaceI18n.t === "function") {
+      return window.FireplaceI18n.t(key, variables, currentLocale);
+    }
+    var value = FALLBACK_COPY[key] || key;
+    return String(value).replace(/\{([a-zA-Z0-9_]+)\}/g, function (_, name) {
+      return variables && variables[name] !== undefined ? String(variables[name]) : "{" + name + "}";
+    });
+  }
+
+  function readStored(key, fallback) {
+    try {
+      var value = window.localStorage.getItem(key);
+      return value === null ? fallback : value;
+    } catch (error) {
+      return fallback;
+    }
+  }
+
+  function writeStored(key, value) {
+    try {
+      window.localStorage.setItem(key, value);
+    } catch (error) {
+      // Private browsing or disabled storage should not block a local match.
+    }
+  }
 
   function emptySelection() {
     return {
@@ -175,6 +218,36 @@
 
   function init() {
     [
+      "app-shell",
+      "lobby-screen",
+      "lobby-form",
+      "lobby-title",
+      "lobby-subtitle",
+      "nickname-input",
+      "nickname-label",
+      "nickname-hint",
+      "language-label",
+      "locale-zhCN",
+      "locale-enUS",
+      "opponent-label",
+      "opponent-random-option",
+      "opponent-heuristic-option",
+      "opponent-random-title",
+      "opponent-random-description",
+      "opponent-heuristic-title",
+      "opponent-heuristic-description",
+      "start-match-button",
+      "lobby-status",
+      "lobby-footer",
+      "lobby-login-actions",
+      "enter-lobby-button",
+      "lobby-setup",
+      "game",
+      "table",
+      "page-title",
+      "brand-caption",
+      "opponent-title",
+      "self-title",
       "phase-value",
       "turn-value",
       "active-seat-value",
@@ -191,6 +264,9 @@
       "self-extras",
       "self-board-count",
       "self-board",
+      "hand-title",
+      "decision-title",
+      "log-title",
       "hero-power-row",
       "mana-value",
       "hand",
@@ -212,7 +288,11 @@
       "event-log",
       "game-over",
       "game-over-message",
+      "game-over-return",
       "game-over-dismiss",
+      "terminal-actions",
+      "terminal-status",
+      "terminal-return",
       "connection-value",
       "card-modal",
       "modal-close",
@@ -225,6 +305,7 @@
       elements[id] = getElement(id);
     });
 
+    bindLobbyControls();
     initAttackLine();
 
     elements["action-submit"].addEventListener("click", submitSelected);
@@ -234,7 +315,10 @@
     elements["game-over-dismiss"].addEventListener("click", function () {
       guiState.current.outcomeDismissedRevision = guiState.current.snapshot ? guiState.current.snapshot.revision : null;
       setHidden(elements["game-over"], true);
+      setHidden(elements["terminal-actions"], false);
     });
+    elements["game-over-return"].addEventListener("click", returnHome);
+    elements["terminal-return"].addEventListener("click", returnHome);
     elements["card-modal"].addEventListener("click", function (event) {
       if (event.target && event.target.getAttribute("data-modal-close") === "true") {
         closeCardModal();
@@ -250,12 +334,389 @@
       }
     });
 
+    applyLocaleToDocument();
+    setLobbyFormValues();
     loadState(false);
     pollTimer = window.setInterval(function () {
       if (!busy) {
         pollState();
       }
     }, 2500);
+  }
+
+  function bindLobbyControls() {
+    if (elements["lobby-form"]) {
+      elements["lobby-form"].addEventListener("submit", function (event) {
+        event.preventDefault();
+        if (lobbyStage === "login") {
+          enterLobby();
+        } else {
+          startMatch();
+        }
+      });
+    }
+    ["locale-zhCN", "locale-enUS"].forEach(function (id) {
+      if (elements[id]) {
+        elements[id].addEventListener("click", function () {
+          if (currentMode === "match") {
+            return;
+          }
+          setLocale(elements[id].getAttribute("data-locale"), true);
+        });
+      }
+    });
+    document.querySelectorAll("input[name=opponent]").forEach(function (input) {
+      input.addEventListener("change", function () {
+        currentOpponent = input.value === "heuristic" ? "heuristic" : "random";
+        updateOpponentChoiceStyles();
+      });
+    });
+  }
+
+  function setLocale(locale, persist) {
+    if (currentMode === "match" && locale !== currentLocale) {
+      return;
+    }
+    currentLocale = normalizeLocale(locale);
+    if (persist) {
+      writeStored("fireplace.locale", currentLocale);
+    }
+    applyLocaleToDocument();
+    updateLocaleControls();
+    if (currentMode === "lobby") {
+      renderLobby();
+    } else if (guiState.current.snapshot) {
+      renderSnapshot();
+    }
+  }
+
+  function applyLocaleToDocument() {
+    document.documentElement.lang = currentLocale === "enUS" ? "en" : "zh-CN";
+    document.title = "Fireplace · " + tr("app.title");
+    var description = document.querySelector("meta[name=description]");
+    if (description) {
+      description.setAttribute("content", tr("app.description"));
+    }
+    renderStaticCopy();
+  }
+
+  function setSelectorText(selector, value) {
+    var node = document.querySelector(selector);
+    if (node) {
+      setText(node, value);
+    }
+  }
+
+  function renderStaticCopy() {
+    setText(elements["page-title"], tr("app.title"));
+    setText(elements["brand-caption"], tr("app.caption"));
+    setText(elements["opponent-title"], tr("opponent"));
+    setText(elements["self-title"], tr("you"));
+    setText(elements["hand-title"], tr("yourHand"));
+    setText(elements["decision-title"], tr("decision"));
+    setText(elements["log-title"], tr("matchLog"));
+    setText(elements["game-over-return"], tr("returnHome"));
+    setText(elements["game-over-dismiss"], tr("viewBoard"));
+    setText(elements["terminal-status"], tr("terminalStatus"));
+    setText(elements["terminal-return"], tr("returnHome"));
+    setSelectorText(".opponent-panel .board-heading h3", tr("opponentBoard"));
+    setSelectorText(".self-panel .board-heading h3", tr("yourBoard"));
+    setSelectorText(".log-section .section-heading .muted", tr("logRecent"));
+    setSelectorText(".game-over-card .eyebrow", tr("matchComplete"));
+    setSelectorText(".game-over-card h2", tr("gameOver"));
+    setSelectorText(".game-over-card .muted", tr("gameOverHint"));
+    setSelectorText(".footer > span:first-child", tr("footer"));
+    var fallbackSummary = document.querySelector("#action-fallback summary");
+    if (fallbackSummary) {
+      var fallbackCount = elements["fallback-count"];
+      clear(fallbackSummary);
+      fallbackSummary.appendChild(document.createTextNode(tr("fallback") + " "));
+      if (fallbackCount) {
+        fallbackSummary.appendChild(fallbackCount);
+      }
+    }
+    setSelectorText(".modal-copy .eyebrow", tr("cardDetail"));
+    if (elements["table"]) {
+      elements["table"].setAttribute("aria-label", tr("yourBoard"));
+    }
+    if (elements["opponent-hand"]) {
+      elements["opponent-hand"].setAttribute("aria-label", tr("opponentHandAria"));
+    }
+    if (elements["opponent-hand-count"]) {
+      elements["opponent-hand-count"].setAttribute("aria-label", tr("opponentHandCount"));
+    }
+    if (elements["opponent-board"]) {
+      elements["opponent-board"].setAttribute("aria-label", tr("opponentBoard"));
+    }
+    if (elements["self-board"]) {
+      elements["self-board"].setAttribute("aria-label", tr("yourBoard"));
+    }
+    if (elements["hand"]) {
+      elements["hand"].setAttribute("aria-label", tr("yourHand"));
+    }
+    var belowTools = document.querySelector(".below-board-tools");
+    if (belowTools) {
+      belowTools.setAttribute("aria-label", tr("backupActions"));
+    }
+    if (elements["modal-close"]) {
+      elements["modal-close"].setAttribute("aria-label", tr("close"));
+    }
+    if (elements["opponent-mana-value"]) {
+      elements["opponent-mana-value"].setAttribute("aria-label", tr("opponentManaAria"));
+    }
+    if (elements["mana-value"]) {
+      elements["mana-value"].setAttribute("aria-label", tr("yourManaAria"));
+    }
+    if (elements["opponent-extras"]) {
+      elements["opponent-extras"].setAttribute("aria-label", tr("opponentExtrasAria"));
+    }
+    if (elements["self-extras"]) {
+      elements["self-extras"].setAttribute("aria-label", tr("yourExtrasAria"));
+    }
+    if (elements["choice-options"]) {
+      elements["choice-options"].setAttribute("aria-label", tr("choiceOptions"));
+    }
+    if (elements["quick-actions"]) {
+      elements["quick-actions"].setAttribute("aria-label", tr("quickActions"));
+    }
+    if (elements["position-choices"]) {
+      elements["position-choices"].setAttribute("aria-label", tr("positions"));
+    }
+  }
+
+  function updateLocaleControls() {
+    ["zhCN", "enUS"].forEach(function (locale) {
+      var button = elements["locale-" + locale];
+      if (!button) {
+        return;
+      }
+      var selected = locale === currentLocale;
+      button.classList.toggle("is-selected", selected);
+      button.setAttribute("aria-pressed", selected ? "true" : "false");
+    });
+  }
+
+  function setLobbyFormValues() {
+    if (!elements["nickname-input"]) {
+      return;
+    }
+    elements["nickname-input"].value = readStored("fireplace.nickname", "");
+    setLobbyStage(elements["nickname-input"].value.trim() ? "setup" : "login");
+    var checked = document.querySelector("input[name=opponent]:checked");
+    currentOpponent = checked && checked.value === "heuristic" ? "heuristic" : "random";
+    updateLocaleControls();
+    updateOpponentChoiceStyles();
+  }
+
+  function updateOpponentChoiceStyles() {
+    ["random", "heuristic"].forEach(function (opponent) {
+      var input = document.querySelector("input[name=opponent][value=" + opponent + "]");
+      var option = elements["opponent-" + opponent + "-option"];
+      var selected = Boolean(input && input.checked);
+      if (option) {
+        option.classList.toggle("is-selected", selected);
+      }
+    });
+  }
+
+  function setLobbyStage(stage) {
+    lobbyStage = stage === "setup" ? "setup" : "login";
+    setHidden(elements["lobby-login-actions"], lobbyStage !== "login");
+    setHidden(elements["lobby-setup"], lobbyStage !== "setup");
+    if (elements["enter-lobby-button"]) {
+      setText(elements["enter-lobby-button"], tr("lobby.enter"));
+    }
+  }
+
+  function setLobbyStatus(message, kind) {
+    setText(elements["lobby-status"], message || "");
+    if (elements["lobby-status"]) {
+      elements["lobby-status"].className = "lobby-status" + (kind ? " " + kind : "");
+    }
+  }
+
+  function setScreen(mode) {
+    currentMode = mode === "match" ? "match" : "lobby";
+    setHidden(elements["lobby-screen"], currentMode !== "lobby");
+    setHidden(elements["game"], currentMode !== "match");
+    if (currentMode === "lobby") {
+      setHidden(elements["game-over"], true);
+      setHidden(elements["terminal-actions"], true);
+      updateLocaleControls();
+    }
+  }
+
+  function clearMatchState() {
+    guiState.current.snapshot = null;
+    guiState.current.actionIndex = Model.index([]);
+    guiState.resetSelection();
+    guiState.current.fingerprint = "";
+    guiState.current.latestEventSeq = null;
+    guiState.current.outcomeDismissedRevision = null;
+    inspectedCardRef = null;
+    setHidden(elements["card-modal"], true);
+    setHidden(elements["terminal-actions"], true);
+    assetRequests.forEach(function (entry) {
+      entry.cancelled = true;
+      if (entry.objectUrl) {
+        URL.revokeObjectURL(entry.objectUrl);
+      }
+    });
+    assetRequests.clear();
+    renderEmptyState();
+  }
+
+  function renderLobby() {
+    setScreen("lobby");
+    setText(elements["lobby-title"], tr("lobby.title"));
+    setText(elements["lobby-subtitle"], tr("lobby.subtitle"));
+    setText(elements["nickname-label"], tr("lobby.nickname"));
+    setText(elements["nickname-hint"], tr("lobby.nicknameHint"));
+    setText(elements["language-label"], tr("lobby.language"));
+    setText(elements["opponent-label"], tr("lobby.opponent"));
+    setText(elements["opponent-random-title"], tr("lobby.random"));
+    setText(elements["opponent-random-description"], tr("lobby.randomDescription"));
+    setText(elements["opponent-heuristic-title"], tr("lobby.heuristic"));
+    setText(elements["opponent-heuristic-description"], tr("lobby.heuristicDescription"));
+    setText(elements["start-match-button"], tr("lobby.start"));
+    setText(elements["lobby-footer"], tr("lobby.footer"));
+    if (elements["nickname-input"]) {
+      elements["nickname-input"].placeholder = tr("lobby.nicknamePlaceholder");
+    }
+    updateLocaleControls();
+    updateOpponentChoiceStyles();
+    setLobbyStage(lobbyStage);
+  }
+
+  function enterLobby() {
+    if (busy) {
+      return;
+    }
+    var nickname = elements["nickname-input"] ? elements["nickname-input"].value.trim() : "";
+    if (!nickname) {
+      setLobbyStatus(tr("lobby.enterName"), "error");
+      if (elements["nickname-input"]) {
+        elements["nickname-input"].focus();
+      }
+      return;
+    }
+    writeStored("fireplace.nickname", nickname);
+    setLobbyStage("setup");
+    setLobbyStatus(tr("lobby.serverReady"));
+  }
+
+  function startMatch() {
+    if (busy) {
+      return;
+    }
+    if (lobbyStage !== "setup") {
+      enterLobby();
+      return;
+    }
+    var nickname = elements["nickname-input"] ? elements["nickname-input"].value.trim() : "";
+    if (!nickname) {
+      setLobbyStatus(tr("lobby.enterName"), "error");
+      if (elements["nickname-input"]) {
+        elements["nickname-input"].focus();
+      }
+      return;
+    }
+    writeStored("fireplace.nickname", nickname);
+    currentOpponent = document.querySelector("input[name=opponent]:checked") &&
+      document.querySelector("input[name=opponent]:checked").value === "heuristic" ? "heuristic" : "random";
+    var generation = ++requestGeneration;
+    busy = true;
+    if (elements["start-match-button"]) {
+      elements["start-match-button"].disabled = true;
+    }
+    setLobbyStatus(tr("lobby.starting"));
+    setConnection(tr("status.connecting"), false);
+    fetch(API_START, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ nickname: nickname, opponent: currentOpponent, locale: currentLocale }),
+    })
+      .then(readJsonResponse)
+      .then(function (payload) {
+        if (generation !== requestGeneration) {
+          return;
+        }
+        var envelope = normalizeServerPayload(payload);
+        if (!envelope.snapshot) {
+          throw new Error(tr("stateMissing"));
+        }
+        currentLocale = normalizeLocale(envelope.locale || currentLocale);
+        applyLocaleToDocument();
+        clearMatchState();
+        applySnapshot(envelope.snapshot, { resetSelection: true });
+        setScreen("match");
+        setConnection(tr("status.connected"), false);
+      })
+      .catch(function (error) {
+        if (generation !== requestGeneration) {
+          return;
+        }
+        setLobbyStatus(tr("lobby.startFailed", { message: errorMessage(error) }), "error");
+        setConnection(tr("status.disconnected"), true);
+      })
+      .finally(function () {
+        if (generation !== requestGeneration) {
+          return;
+        }
+        busy = false;
+        if (elements["start-match-button"]) {
+          elements["start-match-button"].disabled = false;
+        }
+      });
+  }
+
+  function returnHome() {
+    var snapshot = guiState.current.snapshot;
+    if (busy || !snapshot || !snapshot.outcome) {
+      return;
+    }
+    var generation = ++requestGeneration;
+    busy = true;
+    setConnection(tr("status.submitting"), false);
+    fetch(API_RETURN, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ session_id: snapshot.session_id, revision: snapshot.revision }),
+    })
+      .then(readJsonResponse)
+      .then(function (payload) {
+        if (generation !== requestGeneration) {
+          return;
+        }
+        var envelope = normalizeServerPayload(payload);
+        if (envelope.mode !== "lobby") {
+          throw new Error(tr("stateMissing"));
+        }
+        currentLocale = normalizeLocale(envelope.locale || currentLocale);
+        applyLocaleToDocument();
+        clearMatchState();
+        setLobbyFormValues();
+        setLobbyStatus(tr("lobby.waiting"));
+        renderLobby();
+        setConnection(tr("status.connected"), false);
+      })
+      .catch(function (error) {
+        if (generation !== requestGeneration) {
+          return;
+        }
+        showNotice(tr("lobby.returnFailed", { message: errorMessage(error) }), "error", 0);
+      })
+      .finally(function () {
+        if (generation === requestGeneration) {
+          busy = false;
+        }
+      });
   }
 
   function isObject(value) {
@@ -283,9 +744,9 @@
 
   function cardName(card) {
     if (!isObject(card)) {
-      return "未知卡牌";
+      return tr("unknownCard");
     }
-    return safeText(card.name, safeText(card.card_id, "未知卡牌"));
+    return safeText(card.name, safeText(card.card_id, tr("unknownCard")));
   }
 
   function cardText(card) {
@@ -303,7 +764,15 @@
   }
 
   function labelForType(type) {
-    return TYPE_LABELS[type] || safeText(type, "动作");
+    var labels = {
+      MULLIGAN: "replace",
+      CHOOSE: "choose",
+      PLAY_CARD: "play",
+      ATTACK: "attackTarget",
+      USE_HERO_POWER: "usePower",
+      END_TURN: "endTurn",
+    };
+    return labels[type] ? tr(labels[type]) : safeText(type, tr("unknownAction"));
   }
 
   function setText(node, value) {
@@ -359,7 +828,7 @@
     if (isObject(error) && typeof error.message === "string") {
       return error.message;
     }
-    return "未知错误";
+    return tr("unknownError");
   }
 
   function readJsonResponse(response) {
@@ -369,7 +838,7 @@
         try {
           payload = JSON.parse(body);
         } catch (error) {
-          throw new Error("服务器返回了无效 JSON（HTTP " + response.status + "）。");
+          throw new Error(tr("invalidJson", { value: response.status }));
         }
       }
       if (!response.ok) {
@@ -402,6 +871,24 @@
     };
   }
 
+  function normalizeServerPayload(payload) {
+    if (!isObject(payload)) {
+      return { mode: "unknown", locale: currentLocale, snapshot: null };
+    }
+    var mode = payload.mode === "lobby" ? "lobby" : "match";
+    var locale = normalizeLocale(payload.locale || currentLocale);
+    if (mode === "lobby") {
+      return { mode: "lobby", locale: locale, snapshot: null, raw: payload };
+    }
+    var source = isObject(payload.snapshot) ? payload.snapshot : payload;
+    return {
+      mode: "match",
+      locale: locale,
+      snapshot: snapshotFromPayload(source),
+      raw: payload,
+    };
+  }
+
   function snapshotFingerprint(value) {
     try {
       return JSON.stringify(value);
@@ -410,9 +897,52 @@
     }
   }
 
+  function applyServerPayload(payload, options) {
+    var envelope = normalizeServerPayload(payload);
+    if (envelope.mode === "lobby") {
+      var enteredLobby = currentMode !== "lobby";
+      if (enteredLobby || guiState.current.snapshot) {
+        clearMatchState();
+        if (enteredLobby) {
+          setLobbyFormValues();
+        }
+      }
+      var lobbyDefault = envelope.raw && (envelope.raw.default_opponent || envelope.raw.opponent);
+      if (lobbyDefault === "random" || lobbyDefault === "heuristic") {
+        currentOpponent = lobbyDefault;
+        var defaultInput = document.querySelector("input[name=opponent][value=" + lobbyDefault + "]");
+        if (defaultInput) {
+          defaultInput.checked = true;
+        }
+        updateOpponentChoiceStyles();
+      }
+      currentLocale = normalizeLocale(envelope.locale || currentLocale);
+      applyLocaleToDocument();
+      renderLobby();
+      return envelope;
+    }
+    if (!envelope.snapshot) {
+      throw new Error(tr("stateMissing"));
+    }
+    if (currentMode !== "match") {
+      clearMatchState();
+    }
+    /* Locale is selected before a match and locked once a match snapshot is
+       received.  A server supplied locale is authoritative for refreshes. */
+    currentLocale = normalizeLocale(envelope.locale || currentLocale);
+    applyLocaleToDocument();
+    if (guiState.isStale(envelope.snapshot)) {
+      return envelope;
+    }
+    applySnapshot(envelope.snapshot, options || { resetSelection: guiState.isDecisionChanged(envelope.snapshot) });
+    setScreen("match");
+    return envelope;
+  }
+
   function loadState(silent) {
+    var generation = requestGeneration;
     if (!silent) {
-      setConnection("读取对局……", false);
+      setConnection(tr("status.reading"), false);
     }
     return fetch(API_STATE, {
       headers: { Accept: "application/json" },
@@ -420,23 +950,22 @@
     })
       .then(readJsonResponse)
       .then(function (payload) {
-        var next = snapshotFromPayload(payload);
-        if (!next) {
-          throw new Error("状态响应缺少对局快照。");
+        if (generation !== requestGeneration) {
+          return null;
         }
-        if (guiState.isStale(next)) {
-          return guiState.current.snapshot;
-        }
-        applySnapshot(next, { resetSelection: guiState.isDecisionChanged(next) });
-        setConnection("已连接", false);
-        return next;
+        var envelope = applyServerPayload(payload, { resetSelection: guiState.isDecisionChanged(normalizeServerPayload(payload).snapshot || {}) });
+        setConnection(tr("status.connected"), false);
+        return envelope.snapshot;
       })
       .catch(function (error) {
-        setConnection("连接断开", true);
-        if (!silent || !guiState.current.snapshot) {
-          showNotice("无法读取本机对局：" + errorMessage(error), "error", 0);
+        if (generation !== requestGeneration) {
+          return null;
+        }
+        setConnection(tr("status.disconnected"), true);
+        if (!silent || (!guiState.current.snapshot && currentMode !== "lobby")) {
+          showNotice(tr("stateUnavailable", { message: errorMessage(error) }), "error", 0);
           if (!guiState.current.snapshot) {
-            renderEmptyState();
+            renderLobby();
           }
         }
         return null;
@@ -444,32 +973,43 @@
   }
 
   function pollState() {
+    var generation = requestGeneration;
     fetch(API_STATE, {
       headers: { Accept: "application/json" },
       cache: "no-store",
     })
       .then(readJsonResponse)
       .then(function (payload) {
-        var next = snapshotFromPayload(payload);
-        if (!next) {
+        if (generation !== requestGeneration) {
           return;
         }
-        if (guiState.isStale(next)) {
+        var envelope = normalizeServerPayload(payload);
+        if (envelope.mode === "lobby") {
+          if (currentMode !== "lobby") {
+            applyServerPayload(payload, { resetSelection: true });
+          }
+          setConnection(tr("status.connected"), false);
           return;
         }
-        setConnection("已连接", false);
+        var next = envelope.snapshot;
+        if (!next || guiState.isStale(next)) {
+          return;
+        }
+        setConnection(tr("status.connected"), false);
         var fingerprint = snapshotFingerprint(next);
         if (fingerprint !== guiState.current.fingerprint) {
           var hadSnapshot = Boolean(guiState.current.snapshot);
           var decisionChanged = guiState.isDecisionChanged(next);
-          applySnapshot(next, { resetSelection: decisionChanged });
+          applyServerPayload(payload, { resetSelection: decisionChanged });
           if (decisionChanged && hadSnapshot && !busy) {
-            showNotice("对局状态已更新，请重新选择当前合法操作。", "", 3200);
+            showNotice(tr("stateUpdated"), "", 3200);
           }
         }
       })
       .catch(function () {
-        setConnection("连接断开", true);
+        if (generation === requestGeneration) {
+          setConnection(tr("status.disconnected"), true);
+        }
       });
   }
 
@@ -508,6 +1048,7 @@
     var newest = transition.newest;
     var newestSeq = transition.newestSeq;
     renderSnapshot();
+    refreshOpenCardModal();
     showPublicFeedback(previous, next, previousEventSeq);
     if (!resetSelection) {
       var focusNode = focusId ? document.getElementById(focusId) : null;
@@ -672,10 +1213,10 @@
   }
 
   function renderEmptyState() {
-    setText(elements["phase-value"], "不可用");
-    setText(elements["turn-value"], "回合 —");
-    setText(elements["active-seat-value"], "行动方 —");
-    setText(elements["revision-value"], "版本 —");
+    setText(elements["phase-value"], tr("status.unavailable"));
+    setText(elements["turn-value"], tr("status.turn", { value: "—" }));
+    setText(elements["active-seat-value"], tr("status.active", { value: "—" }));
+    setText(elements["revision-value"], tr("status.revision", { value: "—" }));
     clear(elements["hand"]);
     clear(elements["self-board"]);
     clear(elements["opponent-board"]);
@@ -701,17 +1242,20 @@
     var phase = safeText(observation.phase, "UNKNOWN").toUpperCase();
 
     setText(elements["phase-value"], phaseLabel(phase));
-    setText(elements["turn-value"], observation.turn === null || observation.turn === undefined ? "回合 —" : "回合 " + String(observation.turn));
-    setText(elements["active-seat-value"], observation.active_seat === null || observation.active_seat === undefined ? "行动方 —" : "行动方 " + String(observation.active_seat) + (observation.active_seat === 0 ? "（你）" : "（对手）"));
-    setText(elements["revision-value"], "版本 " + String(snapshot.revision));
+    setText(elements["turn-value"], observation.turn === null || observation.turn === undefined ? tr("status.turn", { value: "—" }) : tr("status.turn", { value: observation.turn }));
+    var activeLabel = observation.active_seat === null || observation.active_seat === undefined
+      ? "—"
+      : String(observation.active_seat) + (observation.active_seat === 0 ? tr("status.youSuffix") : tr("status.opponentSuffix"));
+    setText(elements["active-seat-value"], tr("status.active", { value: activeLabel }));
+    setText(elements["revision-value"], tr("status.revision", { value: snapshot.revision }));
     setText(elements["mana-value"], manaText(self));
     setText(elements["opponent-mana-value"], manaText(opponent));
-    setText(elements["opponent-hand-count"], String(safeNumber(opponent.hand_count, 0)) + " 张手牌");
-    setText(elements["deck-count"], "牌库 " + String(safeNumber(self.deck_count, 0)));
+    setText(elements["opponent-hand-count"], tr("cardsInHand", { value: safeNumber(opponent.hand_count, 0) }));
+    setText(elements["deck-count"], tr("deck", { value: safeNumber(self.deck_count, 0) }));
     setText(elements["self-board-count"], boardCountText(self.board));
     setText(elements["opponent-board-count"], boardCountText(opponent.board));
-    setText(elements["action-count"], String(actionIndex.actions.length) + " 个合法动作");
-    setText(elements["fallback-count"], "（" + String(actionIndex.actions.length) + "）");
+    setText(elements["action-count"], tr("actions", { value: actionIndex.actions.length }));
+    setText(elements["fallback-count"], "(" + String(actionIndex.actions.length) + ")");
 
     renderHiddenHand(opponent.hand_count);
     renderHero(elements["opponent-hero-row"], opponent.hero, false, opponent.hero_power);
@@ -730,23 +1274,18 @@
   }
 
   function phaseLabel(phase) {
-    return {
-      MULLIGAN: "换牌",
-      CHOICE: "选择",
-      MAIN: "主阶段",
-      GAME_OVER: "对局结束",
-    }[phase] || phase;
+    return tr("phase." + phase, {}) || phase;
   }
 
   function manaText(player) {
     var mana = player && player.mana !== undefined ? player.mana : "—";
     var maxMana = player && player.max_mana !== undefined ? player.max_mana : "—";
-    return String(mana) + " / " + String(maxMana) + " 法力";
+    return String(mana) + " / " + String(maxMana) + " " + tr("mana");
   }
 
   function boardCountText(board) {
     var count = asArray(board).length;
-    return count + " 个随从";
+    return tr("minions", { value: count });
   }
 
   function renderHiddenHand(count) {
@@ -755,7 +1294,7 @@
     for (var index = 0; index < amount; index += 1) {
       var card = document.createElement("span");
       card.className = "hidden-card";
-      card.setAttribute("aria-label", "对手暗手牌 " + String(index + 1));
+      card.setAttribute("aria-label", tr("opponentHiddenCard", { value: index + 1 }));
       card.setAttribute("data-testid", "hidden-opponent-card");
       elements["opponent-hand"].appendChild(card);
     }
@@ -770,13 +1309,13 @@
     var observation = snapshot.observation;
     var self = isObject(observation.self) ? observation.self : {};
     var opponent = isObject(observation.opponent) ? observation.opponent : {};
-    addEntityLabel(labels, self.hero, "你的英雄：" + cardName(self.hero));
-    addEntityLabel(labels, self.hero_power, "你的技能：" + cardName(self.hero_power));
-    addEntityLabel(labels, opponent.hero, "对手英雄：" + cardName(opponent.hero));
-    addEntityLabel(labels, opponent.hero_power, "对手技能：" + cardName(opponent.hero_power));
+    addEntityLabel(labels, self.hero, tr("yourHero") + ": " + cardName(self.hero));
+    addEntityLabel(labels, self.hero_power, tr("skill") + ": " + cardName(self.hero_power));
+    addEntityLabel(labels, opponent.hero, tr("opponentHero") + ": " + cardName(opponent.hero));
+    addEntityLabel(labels, opponent.hero_power, tr("skill") + ": " + cardName(opponent.hero_power));
     asArray(self.hand).forEach(function (card) { addEntityLabel(labels, card, cardName(card)); });
     asArray(self.board).forEach(function (card) { addEntityLabel(labels, card, cardName(card)); });
-    asArray(opponent.board).forEach(function (card) { addEntityLabel(labels, card, "对手：" + cardName(card)); });
+    asArray(opponent.board).forEach(function (card) { addEntityLabel(labels, card, tr("opponent") + ": " + cardName(card)); });
     var pending = isObject(observation.pending_choice) ? observation.pending_choice : {};
     asArray(pending.options).forEach(function (card) { addEntityLabel(labels, card, cardName(card)); });
     asArray(self.hand).forEach(function (card) {
@@ -798,9 +1337,9 @@
   function labelForEntity(entityIdValue) {
     var id = entityId(entityIdValue);
     if (id === null) {
-      return "目标";
+      return tr("target");
     }
-    return entityLabels().get(id) || "实体 #" + String(id);
+    return entityLabels().get(id) || tr("entity", { value: id });
   }
 
   function renderHero(container, hero, own, power) {
@@ -812,7 +1351,7 @@
     if (!isObject(hero)) {
       var empty = document.createElement("p");
       empty.className = "muted";
-      empty.textContent = "没有英雄信息";
+      empty.textContent = tr("noHero");
       container.appendChild(empty);
       return;
     }
@@ -839,13 +1378,13 @@
     copy.appendChild(cardTitle(hero));
     var subtitle = document.createElement("p");
     subtitle.className = "card-subtitle";
-    subtitle.textContent = own ? "你的英雄" : "对手英雄";
+    subtitle.textContent = own ? tr("yourHero") : tr("opponentHero");
     copy.appendChild(subtitle);
     if (!own && isObject(power)) {
       var powerSummary = document.createElement("p");
       powerSummary.className = "card-subtitle public-power";
-      powerSummary.textContent = "技能：" + cardName(power) +
-        (power.cost === undefined || power.cost === null ? "" : " · 费用 " + String(power.cost));
+      powerSummary.textContent = tr("skill") + ": " + cardName(power) +
+        (power.cost === undefined || power.cost === null ? "" : " · " + tr("cost") + " " + String(power.cost));
       copy.appendChild(powerSummary);
     }
     copy.appendChild(createCharacterStats(hero, safeNumber(hero.atk, 0) > 0));
@@ -863,9 +1402,9 @@
       weaponButton.setAttribute("data-testid", own ? "self-weapon" : "opponent-weapon");
       weaponButton.appendChild(createCardArt(weapon, "tile"));
       var weaponText = document.createElement("span");
-      weaponText.textContent = "武器：" + cardName(weapon) + " · " +
-        String(safeNumber(weapon.atk, 0)) + " 攻 / " +
-        String(safeNumber(weapon.durability, 0)) + " 耐久";
+      weaponText.textContent = tr("weapon") + ": " + cardName(weapon) + " · " +
+        String(safeNumber(weapon.atk, 0)) + " " + tr("attack") + " / " +
+        String(safeNumber(weapon.durability, 0)) + " " + tr("durability");
       weaponButton.appendChild(weaponText);
       weaponButton.addEventListener("click", function () { openCardModal(weapon); });
       container.appendChild(weaponButton);
@@ -876,7 +1415,7 @@
         secretButton.type = "button";
         secretButton.className = "extra-chip secret-chip";
         secretButton.setAttribute("data-testid", "self-secret");
-        secretButton.textContent = "奥秘：" + cardName(secret);
+        secretButton.textContent = tr("secrets") + ": " + cardName(secret);
         secretButton.addEventListener("click", function () { openCardModal(secret); });
         container.appendChild(secretButton);
       });
@@ -884,7 +1423,7 @@
       var hiddenSecrets = document.createElement("span");
       hiddenSecrets.className = "extra-chip secret-chip hidden-secret";
       hiddenSecrets.setAttribute("data-testid", "opponent-secret-count");
-      hiddenSecrets.textContent = "对手奥秘 ×" + String(player.secrets_count);
+      hiddenSecrets.textContent = tr("opponentSecrets", { value: player.secrets_count });
       container.appendChild(hiddenSecrets);
     }
     setHidden(container, !container.childNodes.length);
@@ -933,7 +1472,7 @@
     button.type = "button";
     button.className = "board-slot";
     button.setAttribute("data-position", String(position));
-    button.setAttribute("aria-label", "插入到" + positionLabel(position));
+    button.setAttribute("aria-label", tr("positionNumber", { value: positionLabel(position) }));
     button.textContent = "+";
     button.addEventListener("click", function () { choosePosition(position); });
     return button;
@@ -954,11 +1493,11 @@
     wrapper.appendChild(createCardArt(power, "art"));
     var copy = document.createElement("div");
     copy.className = "power-copy";
-    copy.appendChild(cardTitle(power, "技能："));
+    copy.appendChild(cardTitle(power, tr("skill") + ": "));
     var details = document.createElement("p");
     details.className = "card-subtitle";
-    details.textContent = (power.cost === undefined || power.cost === null ? "" : "费用 " + String(power.cost) + " · ") +
-      (power.is_usable ? "可以使用" : (power.exhausted ? "本回合已使用" : "当前不可用"));
+    details.textContent = (power.cost === undefined || power.cost === null ? "" : tr("cost") + " " + String(power.cost) + " · ") +
+      (power.is_usable ? tr("canUse") : (power.exhausted ? tr("usedThisTurn") : tr("notAvailable")));
     copy.appendChild(details);
     appendCardText(copy, power);
     wrapper.appendChild(copy);
@@ -990,7 +1529,7 @@
       content.className = "card-content";
       content.appendChild(cardTitle(card));
       if (asArray(card && card.choose_options).length) {
-        content.appendChild(createBadge("选择一项", "branch-badge"));
+        content.appendChild(createBadge(tr("selectOne"), "branch-badge"));
       }
       appendCardText(content, card);
       wrapper.appendChild(content);
@@ -1002,7 +1541,7 @@
     var wrapper = document.createElement("article");
     wrapper.className = className + " card-zoomable";
     wrapper.setAttribute("aria-label", cardName(card));
-    wrapper.title = "点击操作；右上角查看卡牌详情";
+    wrapper.title = tr("viewCard", { value: cardName(card) });
     var visibleId = entityId(card && card.entity_id);
     if (visibleId !== null) {
       wrapper.setAttribute("data-entity-id", String(visibleId));
@@ -1024,7 +1563,7 @@
     inspect.type = "button";
     inspect.className = "card-inspect";
     inspect.textContent = "⌕";
-    inspect.setAttribute("aria-label", "查看" + cardName(card) + "的详情");
+    inspect.setAttribute("aria-label", tr("viewCard", { value: cardName(card) }));
     inspect.setAttribute("data-testid", "card-inspect");
     inspect.addEventListener("click", function (event) {
       event.stopPropagation();
@@ -1040,7 +1579,7 @@
     var cardId = isObject(card) ? card.card_id : null;
     if (cardId) {
       var image = document.createElement("img");
-      image.alt = cardName(card) + " 卡图";
+      image.alt = cardName(card) + " " + tr("cardArt");
       image.loading = "lazy";
       image.hidden = true;
       var preferredKind = kind || "render";
@@ -1181,21 +1720,21 @@
     var stats = document.createElement("div");
     stats.className = "stats";
     if (includeAttack && character.atk !== undefined) {
-      stats.appendChild(createStat("attack", "攻击", character.atk));
+      stats.appendChild(createStat("attack", tr("attack"), character.atk));
     }
     if (character.health !== undefined) {
       var health = !compactHealth && character.max_health !== undefined && character.max_health !== null
         ? String(character.health) + " / " + String(character.max_health)
         : character.health;
-      var healthStat = createStat("health", "生命", health);
+      var healthStat = createStat("health", tr("health"), health);
       if (compactHealth && character.max_health !== undefined && character.max_health !== null) {
-        healthStat.setAttribute("aria-label", "生命 " + String(character.health) + " / " + String(character.max_health));
-        healthStat.title = "生命 " + String(character.health) + " / " + String(character.max_health);
+        healthStat.setAttribute("aria-label", tr("health") + " " + String(character.health) + " / " + String(character.max_health));
+        healthStat.title = tr("health") + " " + String(character.health) + " / " + String(character.max_health);
       }
       stats.appendChild(healthStat);
     }
     if (character.armor !== undefined && character.armor) {
-      stats.appendChild(createStat("armor", "护甲", character.armor));
+      stats.appendChild(createStat("armor", tr("armor"), character.armor));
     }
     return stats;
   }
@@ -1216,22 +1755,22 @@
     var badges = document.createElement("div");
     badges.className = "card-badges";
     if (card.taunt) {
-      badges.appendChild(createBadge("嘲讽", "taunt"));
+      badges.appendChild(createBadge(tr("taunt"), "taunt"));
     }
     if (card.divine_shield) {
-      badges.appendChild(createBadge("圣盾", "shield"));
+      badges.appendChild(createBadge(tr("shield"), "shield"));
     }
     if (card.frozen) {
-      badges.appendChild(createBadge("冻结", "frozen"));
+      badges.appendChild(createBadge(tr("frozen"), "frozen"));
     }
     if (card.stealthed) {
-      badges.appendChild(createBadge("潜行", "stealth"));
+      badges.appendChild(createBadge(tr("stealth"), "stealth"));
     }
     if (card.can_attack) {
-      badges.appendChild(createBadge("可攻击", "ready"));
+      badges.appendChild(createBadge(tr("ready"), "ready"));
     }
     if (own && card.zone_position !== undefined) {
-      badges.appendChild(createBadge("位置 " + String(card.zone_position), "position"));
+      badges.appendChild(createBadge(tr("zonePosition", { value: card.zone_position }), "position"));
     }
     return badges;
   }
@@ -1366,7 +1905,7 @@
       if (mulligan) {
         submitRawAction(mulligan);
       } else {
-        showNotice("这组换牌选择已经不在当前合法动作中。", "error", 3600);
+        showNotice(tr("oldAction"), "error", 3600);
       }
       return;
     }
@@ -1374,7 +1913,7 @@
     if (candidates.length === 1 && !actionRequiresSelection(candidates[0])) {
       submitRawAction(candidates[0]);
     } else {
-      showNotice("请先选择分支、目标或随从站位。", "error", 2800);
+      showNotice(tr("selectionRequired"), "error", 2800);
     }
   }
 
@@ -1403,7 +1942,7 @@
   function submitRawAction(action) {
     var index = actionIndexOf(action);
     if (index < 0) {
-      showNotice("这个动作已经不在当前合法动作中，请重新选择。", "error", 3600);
+      showNotice(tr("oldAction"), "error", 3600);
       loadState(false);
       return;
     }
@@ -1418,13 +1957,14 @@
     }
     var action = actionIndex.actions[index];
     if (!isObject(action)) {
-      showNotice("动作已经过期，请重新读取当前状态。", "error", 0);
+      showNotice(tr("staleRevision"), "error", 0);
       loadState(false);
       return;
     }
+    var generation = requestGeneration;
     busy = true;
     setButtonsDisabled(true);
-    setConnection("提交中……", false);
+    setConnection(tr("status.submitting"), false);
     fetch(API_ACTION, {
       method: "POST",
       headers: {
@@ -1435,32 +1975,45 @@
     })
       .then(readJsonResponse)
       .then(function (payload) {
-        var next = snapshotFromPayload(payload);
-        if (!next) {
-          throw new Error("动作响应缺少对局快照。");
+        if (generation !== requestGeneration) {
+          return;
         }
-        if (!guiState.isStale(next)) {
-          applySnapshot(next, { resetSelection: true });
+        var envelope = applyServerPayload(payload, { resetSelection: true });
+        if (envelope.mode !== "match" || !envelope.snapshot) {
+          throw new Error(tr("actionMissing"));
         }
-        setConnection("已连接", false);
+        setConnection(tr("status.connected"), false);
       })
       .catch(function (error) {
-        var next = error && error.payload ? snapshotFromPayload(error.payload) : null;
-        if (next && !guiState.isStale(next)) {
-          applySnapshot(next, { resetSelection: true });
+        if (generation !== requestGeneration) {
+          return;
+        }
+        var synced = false;
+        if (error && error.payload) {
+          var errorEnvelope = normalizeServerPayload(error.payload);
+          if (errorEnvelope.mode === "lobby" || errorEnvelope.snapshot) {
+            applyServerPayload(error.payload, { resetSelection: true });
+            synced = true;
+          }
         }
         if (error && error.status === 409) {
-          showNotice("动作已过期。已加载最新状态，请重新选择。", "error", 0);
+          showNotice(tr("staleAction"), "error", 0);
         } else {
-          showNotice("动作提交失败：" + errorMessage(error), "error", 0);
+          showNotice(tr("submitFailed", { message: errorMessage(error) }), "error", 0);
         }
-        if (error && error.status === 409 && next) {
-          setConnection("已连接", false);
+        if (error && error.status === 409 && synced) {
+          setConnection(tr("status.connected"), false);
         } else {
-          setConnection(error && error.status ? "服务端拒绝动作" : "连接断开", true);
+          setConnection(error && error.status ? tr("status.rejected") : tr("status.disconnected"), true);
+        }
+        if (!synced) {
+          loadState(false);
         }
       })
       .finally(function () {
+        if (generation !== requestGeneration) {
+          return;
+        }
         busy = false;
         setButtonsDisabled(false);
       });
@@ -1492,29 +2045,29 @@
     elements["decision-panel"].classList.toggle("phase-choice", phase === "CHOICE");
     elements["decision-panel"].classList.toggle("phase-mulligan", phase === "MULLIGAN");
     if (!snapshot) {
-      setText(elements["action-instructions"], "等待本机服务……");
+      setText(elements["action-instructions"], tr("loadingMatch"));
       return;
     }
     if (phase === "GAME_OVER") {
-      setText(elements["action-instructions"], "本局已经结束。");
+      setText(elements["action-instructions"], tr("gameOverInstruction"));
       return;
     }
     if (phase === "MULLIGAN") {
-      setText(elements["action-instructions"], "点击想要替换的手牌，再确认换牌。也可以一张都不换。");
+      setText(elements["action-instructions"], tr("mulliganInstruction"));
       renderPendingChoice(snapshot.observation.pending_choice);
       var mulliganAction = Model.findMulligan(actionIndex, selection.mulliganIds);
-      setText(elements["action-submit"], mulliganAction ? "确认换牌" : "选择换牌牌组");
+      setText(elements["action-submit"], mulliganAction ? tr("confirmMulligan") : tr("chooseMulligan"));
       setHidden(elements["action-submit"], false);
       return;
     }
     if (phase === "CHOICE") {
-      setText(elements["action-instructions"], "请选择一张卡牌继续对局。");
+      setText(elements["action-instructions"], tr("selectOption"));
       renderPendingChoice(snapshot.observation.pending_choice);
       renderChoiceOptions(actionIndex.choices);
       return;
     }
     if (phase !== "MAIN") {
-      setText(elements["action-instructions"], "等待对手完成操作……");
+      setText(elements["action-instructions"], tr("waitingOpponent"));
       return;
     }
 
@@ -1537,27 +2090,27 @@
       renderSourceOptions(candidates);
       var targetOptions = Model.uniqueValues(candidates, "target_entity_id");
       if (targetOptions.length) {
-        setText(elements["target-hint"], "请选择高亮目标。");
+        setText(elements["target-hint"], tr("chooseTarget"));
         setHidden(elements["target-hint"], false);
       }
       if (candidates.length === 1 && !actionRequiresSelection(candidates[0])) {
-        setText(elements["action-submit"], "确认" + labelForType(candidates[0].type));
+        setText(elements["action-submit"], tr("confirm") + " " + labelForType(candidates[0].type));
         setHidden(elements["action-submit"], false);
       }
       if (!candidates.length) {
-        setText(elements["action-instructions"], "这个选择已经不再合法，请取消后重新选择。");
+        setText(elements["action-instructions"], tr("selectionInvalid"));
       }
     } else {
-      setText(elements["action-instructions"], "选择下方操作，或直接点击手牌、场面随从和英雄技能；需要目标时会高亮。");
+      setText(elements["action-instructions"], tr("mainInstruction"));
     }
   }
 
   function renderQuickActions() {
     var actionIndex = guiState.current.actionIndex;
     var groups = [
-      { type: "PLAY_CARD", title: "出牌" },
-      { type: "ATTACK", title: "攻击" },
-      { type: "USE_HERO_POWER", title: "英雄技能" },
+      { type: "PLAY_CARD", title: tr("play") },
+      { type: "ATTACK", title: tr("attackTarget") },
+      { type: "USE_HERO_POWER", title: tr("usePower") },
     ];
     groups.forEach(function (group) {
       var actions = actionIndex.byType.get(group.type) || [];
@@ -1607,7 +2160,9 @@
     var zone = type === "PLAY_CARD" ? asArray(self.hand) : asArray(self.board);
     var position = zone.findIndex(function (card) { return entityId(card.entity_id) === id; });
     if (position >= 0) {
-      return type === "PLAY_CARD" ? " · 手牌 " + String(position + 1) : " · 场上 " + String(position + 1);
+      return type === "PLAY_CARD"
+        ? " · " + tr("handPosition", { value: position + 1 })
+        : " · " + tr("boardPosition", { value: position + 1 });
     }
     return "";
   }
@@ -1619,13 +2174,13 @@
     }
     var bounds = [];
     if (choice.min_count !== undefined) {
-      bounds.push("至少 " + String(choice.min_count));
+      bounds.push(tr("atLeast", { value: choice.min_count }));
     }
     if (choice.max_count !== undefined) {
-      bounds.push("最多 " + String(choice.max_count));
+      bounds.push(tr("atMost", { value: choice.max_count }));
     }
     var text = document.createElement("span");
-    text.textContent = "当前选择" + (bounds.length ? "（" + bounds.join("，") + "）" : "");
+    text.textContent = tr("currentChoice") + (bounds.length ? " (" + bounds.join(", ") + ")" : "");
     elements["pending-choice"].appendChild(text);
     setHidden(elements["pending-choice"], false);
   }
@@ -1639,7 +2194,7 @@
         var button = document.createElement("button");
         button.type = "button";
         button.className = "option-button";
-        button.textContent = "选择 " + labelForEntity(action.choice_entity_id);
+        button.textContent = tr("choose") + " " + labelForEntity(action.choice_entity_id);
         button.addEventListener("click", function () { submitRawAction(action); });
         elements["choice-options"].appendChild(button);
       } else {
@@ -1655,7 +2210,7 @@
     if (branches.length) {
       var heading = document.createElement("p");
       heading.className = "tool-heading";
-      heading.textContent = "选择分支";
+      heading.textContent = tr("chooseBranch");
       elements["choice-options"].appendChild(heading);
       branches.forEach(function (branchId) {
         var card = optionCard(findVisibleEntity(branchId), function () { chooseBranch(branchId); });
@@ -1674,7 +2229,7 @@
     if (positions.length && selection.position === null) {
       var positionHeading = document.createElement("p");
       positionHeading.className = "tool-heading";
-      positionHeading.textContent = "选择随从站位";
+      positionHeading.textContent = tr("choosePosition");
       elements["position-choices"].appendChild(positionHeading);
       positions.slice().sort(function (left, right) { return left - right; }).forEach(function (position) {
         var button = document.createElement("button");
@@ -1706,16 +2261,16 @@
     var selection = guiState.current.selection;
     var parts = [labelForType(selection.type) + " · " + labelForEntity(selection.sourceId)];
     if (selection.branchId !== null) {
-      parts.push("分支：" + labelForEntity(selection.branchId));
+      parts.push(tr("chooseBranch") + ": " + labelForEntity(selection.branchId));
     }
     if (selection.targetId !== null) {
-      parts.push("目标：" + labelForEntity(selection.targetId));
+      parts.push(tr("target") + ": " + labelForEntity(selection.targetId));
     }
     if (selection.position !== null) {
-      parts.push("位置：" + positionLabel(selection.position));
+      parts.push(tr("position", { value: positionLabel(selection.position) }));
     }
     if (candidates.length > 1) {
-      parts.push("还需选择");
+      parts.push(tr("selectionNeedsMore"));
     }
     return parts.join("　");
   }
@@ -1723,9 +2278,9 @@
   function positionLabel(position) {
     var value = Number(position);
     if (value === 0) {
-      return "最左";
+      return tr("positionLeft");
     }
-    return "第 " + String(value + 1) + " 个位置";
+    return tr("positionNumber", { value: value + 1 });
   }
 
   function findVisibleEntity(id) {
@@ -1770,7 +2325,7 @@
     if (!types.length) {
       var empty = document.createElement("p");
       empty.className = "muted";
-      empty.textContent = snapshot && snapshot.outcome ? "对局已经结束。" : "当前没有可用动作。";
+      empty.textContent = snapshot && snapshot.outcome ? tr("ended") : tr("noActions");
       elements["action-menu"].appendChild(empty);
       return;
     }
@@ -1805,26 +2360,26 @@
 
   function actionLabel(action) {
     if (!isObject(action)) {
-      return "未知动作";
+      return tr("unknownAction");
     }
     if (action.type === "MULLIGAN") {
       var ids = asArray(action.mulligan_entity_ids);
-      return ids.length ? "替换 " + ids.map(labelForEntity).join("、") : "保留全部手牌";
+      return ids.length ? tr("replace") + " " + ids.map(labelForEntity).join(currentLocale === "enUS" ? ", " : "、") : tr("keepAll");
     }
     if (action.type === "CHOOSE") {
-      return "选择 " + labelForEntity(action.choice_entity_id);
+      return tr("choose") + " " + labelForEntity(action.choice_entity_id);
     }
     if (action.type === "PLAY_CARD") {
-      return "打出 " + labelForEntity(action.source_entity_id) + actionSuffix(action);
+      return tr("play") + " " + labelForEntity(action.source_entity_id) + actionSuffix(action);
     }
     if (action.type === "ATTACK") {
-      return "用 " + labelForEntity(action.source_entity_id) + " 攻击 " + labelForEntity(action.target_entity_id);
+      return tr("attackWith") + " " + labelForEntity(action.source_entity_id) + " " + tr("attackTarget") + " " + labelForEntity(action.target_entity_id);
     }
     if (action.type === "USE_HERO_POWER") {
-      return "使用技能 " + labelForEntity(action.source_entity_id) + actionSuffix(action);
+      return tr("usePower") + " " + labelForEntity(action.source_entity_id) + actionSuffix(action);
     }
     if (action.type === "END_TURN") {
-      return "结束回合";
+      return tr("endTurn");
     }
     return labelForType(action.type);
   }
@@ -1850,7 +2405,7 @@
     if (!list.length) {
       var empty = document.createElement("li");
       empty.className = "empty-log";
-      empty.textContent = "对局事件会显示在这里。";
+      empty.textContent = tr("publicEvent");
       elements["event-log"].appendChild(empty);
       return;
     }
@@ -1859,7 +2414,7 @@
       item.className = "event-item" + (safeNumber(event.seq, -1) === latestEventSeq ? " latest" : "");
       var actor = document.createElement("span");
       actor.className = "event-actor " + (event.actor === "opponent" ? "opponent" : "self");
-      actor.textContent = event.actor === "opponent" ? "对手" : "你";
+      actor.textContent = event.actor === "opponent" ? tr("eventOpponent") : tr("eventSelf");
       item.appendChild(actor);
       var message = document.createElement("span");
       message.textContent = eventText(event);
@@ -1867,7 +2422,7 @@
       if (event.turn !== undefined && event.turn !== null) {
         var turn = document.createElement("span");
         turn.className = "event-turn";
-        turn.textContent = "回合 " + String(event.turn);
+        turn.textContent = tr("eventTurn", { value: event.turn });
         item.appendChild(turn);
       }
       elements["event-log"].appendChild(item);
@@ -1876,27 +2431,27 @@
 
   function eventText(event) {
     if (!isObject(event)) {
-      return "发生了一个公开事件";
+      return tr("publicEvent");
     }
     var type = labelForType(event.type);
     function visibleName(id, fallback) {
       var card = findVisibleEntity(id);
-      return card ? cardName(card) : safeText(fallback, "目标");
+      return card ? cardName(card) : safeText(fallback, tr("target"));
     }
     if (event.type === "PLAY_CARD") {
-      return "打出 " + visibleName(event.source_entity_id, event.source_name || "一张卡牌") + (event.position !== undefined ? "（位置 " + String(event.position) + "）" : "");
+      return tr("play") + " " + visibleName(event.source_entity_id, event.source_name || tr("unknownCard")) + (event.position !== undefined ? tr("playedAt", { value: event.position }) : "");
     }
     if (event.type === "ATTACK") {
-      return visibleName(event.source_entity_id, event.source_name || "随从") + " 攻击 " + visibleName(event.target_entity_id, event.target_name || "目标");
+      return visibleName(event.source_entity_id, event.source_name || tr("minions", { value: 1 })) + " " + tr("attackTarget") + " " + visibleName(event.target_entity_id, event.target_name || tr("target"));
     }
     if (event.type === "USE_HERO_POWER") {
-      return "使用英雄技能" + (event.target_name ? " → " + visibleName(event.target_entity_id, event.target_name) : "");
+      return tr("eventHeroPower") + (event.target_name ? tr("arrow") + visibleName(event.target_entity_id, event.target_name) : "");
     }
     if (event.type === "MULLIGAN") {
-      return "完成换牌";
+      return tr("eventMulligan");
     }
     if (event.type === "CHOOSE") {
-      return "完成选择" + (event.source_name ? "：" + String(event.source_name) : "");
+      return tr("eventChoice") + (event.source_name ? (currentLocale === "enUS" ? ": " : "：") + String(event.source_name) : "");
     }
     return type;
   }
@@ -1905,16 +2460,45 @@
     var snapshot = guiState.current.snapshot;
     if (!isObject(outcome) || phase !== "GAME_OVER") {
       setHidden(elements["game-over"], true);
+      setHidden(elements["terminal-actions"], true);
       return;
     }
     var winner = outcome.winner === null || outcome.winner === undefined ? null : String(outcome.winner);
-    var message = winner ? (outcome.human_won === true ? "你赢了！" : "对手获胜。") : "这局是平局。";
-    setText(elements["game-over-message"], message + (winner ? "（" + winner + "）" : ""));
-    setHidden(elements["game-over"], guiState.current.outcomeDismissedRevision === snapshot.revision);
-    showNotice("对局结束：" + message, "outcome", 0);
+    var message = winner ? (outcome.human_won === true ? tr("outcomeWon") : tr("outcomeLost")) : tr("outcomeDraw");
+    var winnerLabel = outcomeWinnerLabel(winner);
+    setText(elements["game-over-message"], message + (winnerLabel ? (currentLocale === "enUS" ? " (" + winnerLabel + ")" : "（" + winnerLabel + "）") : ""));
+    var dismissed = guiState.current.outcomeDismissedRevision === snapshot.revision;
+    setHidden(elements["game-over"], dismissed);
+    setHidden(elements["terminal-actions"], !dismissed);
+    showNotice(tr("outcomeNotice", { message: message }), "outcome", 0);
+  }
+
+  function outcomeWinnerLabel(winner) {
+    if (!winner) {
+      return "";
+    }
+    var normalized = String(winner).trim().toLowerCase();
+    if (normalized === "random") {
+      return tr("lobby.random");
+    }
+    if (normalized === "heuristic") {
+      return tr("lobby.heuristic");
+    }
+    return String(winner);
   }
 
   function openCardModal(card) {
+    if (!isObject(card)) {
+      return;
+    }
+    inspectedCardRef = {
+      entityId: entityId(card.entity_id),
+      cardId: safeText(card.card_id, ""),
+    };
+    renderCardModal(card, true);
+  }
+
+  function renderCardModal(card, focusClose) {
     if (!isObject(card)) {
       return;
     }
@@ -1924,23 +2508,47 @@
     setText(elements["modal-card-id"], safeText(card.card_id, ""));
     clear(elements["modal-stats"]);
     if (card.cost !== undefined) {
-      elements["modal-stats"].appendChild(createStat("cost", "费用", card.cost));
+      elements["modal-stats"].appendChild(createStat("cost", tr("cost"), card.cost));
     }
     if (card.atk !== undefined) {
-      elements["modal-stats"].appendChild(createStat("attack", "攻击", card.atk));
+      elements["modal-stats"].appendChild(createStat("attack", tr("attack"), card.atk));
     }
     if (card.health !== undefined) {
-      elements["modal-stats"].appendChild(createStat("health", "生命", card.health));
+      elements["modal-stats"].appendChild(createStat("health", tr("health"), card.health));
     }
     if (card.durability !== undefined) {
-      elements["modal-stats"].appendChild(createStat("durability", "耐久", card.durability));
+      elements["modal-stats"].appendChild(createStat("durability", tr("durability"), card.durability));
     }
-    setText(elements["modal-card-text"], cardText(card) || "暂无本地卡牌文本");
+    setText(elements["modal-card-text"], cardText(card) || tr("noCardText"));
     setHidden(elements["card-modal"], false);
-    elements["modal-close"].focus();
+    if (focusClose) {
+      elements["modal-close"].focus();
+    }
+  }
+
+  function refreshOpenCardModal() {
+    if (!inspectedCardRef || !elements["card-modal"] || elements["card-modal"].hidden) {
+      return;
+    }
+    var card = inspectedCardRef.entityId === null ? null : findVisibleEntity(inspectedCardRef.entityId);
+    if (!card && inspectedCardRef.cardId) {
+      var snapshot = guiState.current.snapshot;
+      var visible = snapshot && snapshot.observation ? publicCharacters(snapshot.observation) : new Map();
+      visible.forEach(function (candidate) {
+        if (!card && candidate.card_id === inspectedCardRef.cardId) {
+          card = candidate;
+        }
+      });
+    }
+    if (!card) {
+      closeCardModal();
+      return;
+    }
+    renderCardModal(card, false);
   }
 
   function closeCardModal() {
+    inspectedCardRef = null;
     setHidden(elements["card-modal"], true);
   }
 

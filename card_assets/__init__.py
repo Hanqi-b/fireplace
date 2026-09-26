@@ -175,11 +175,25 @@ def _validate_kind(kind: str) -> str:
     return kind
 
 
-def _pick_localized(values: dict[str, str], card_id: str) -> _LocalizedField:
-    for locale in _LOCALES:
-        value = values.get(locale)
+def _validate_locale(locale: str) -> str:
+    if not isinstance(locale, str) or locale not in _LOCALES:
+        raise ValueError("locale must be one of: zhCN, enUS")
+    return locale
+
+
+def _localized_fallback_order(locale: str) -> tuple[str, ...]:
+    # English mode must remain English even when an English translation is
+    # unavailable.  Chinese mode may use the English catalog as its fallback.
+    return ("zhCN", "enUS") if locale == "zhCN" else ("enUS",)
+
+
+def _pick_localized(
+    values: dict[str, str], card_id: str, locale: str
+) -> _LocalizedField:
+    for candidate in _localized_fallback_order(locale):
+        value = values.get(candidate)
         if value:
-            return _LocalizedField(value=value, locale=locale)
+            return _LocalizedField(value=value, locale=candidate)
     return _LocalizedField(value=card_id, locale=None)
 
 
@@ -430,23 +444,27 @@ class AssetResolver:
             self._catalog = _CardCatalog(self.xml_path)
         return self._catalog
 
-    def describe(self, card_id: str) -> CardText:
+    def describe(self, card_id: str, locale: str = "zhCN") -> CardText:
         card_id = _validate_card_id(card_id)
+        locale = _validate_locale(locale)
         record = self._get_catalog().get(card_id)
         if record is None:
             return CardText(name=card_id, text=card_id, locale="und")
-        name = _pick_localized(record.name, card_id)
-        text = _pick_localized(record.text, card_id)
-        locale = (
+        name = _pick_localized(record.name, card_id, locale)
+        text = _pick_localized(record.text, card_id, locale)
+        resolved_locale = (
             name.locale
             if name.locale is not None and name.locale == text.locale
             else "und"
         )
-        return CardText(name=name.value, text=text.value, locale=locale)
+        return CardText(name=name.value, text=text.value, locale=resolved_locale)
 
-    def resolve(self, card_id: str, kind: str = "render") -> ResolvedAsset:
+    def resolve(
+        self, card_id: str, kind: str = "render", locale: str = "zhCN"
+    ) -> ResolvedAsset:
         card_id = _validate_card_id(card_id)
         kind = _validate_kind(kind)
+        locale = _validate_locale(locale)
         media_type = "image/jpeg" if kind == "art" else "image/png"
 
         # A cache directory that cannot be created or accessed must not make a
@@ -458,13 +476,13 @@ class AssetResolver:
 
         locales: tuple[str | None, ...]
         if kind == "render":
-            locales = _LOCALES
+            locales = _localized_fallback_order(locale)
         else:
             locales = (None,)
 
-        # Check every existing locale before attempting a download.  A cached
-        # English fallback should still work instantly when Chinese requests
-        # start timing out after it was cached.
+        # Resolve locales in preference order.  In particular, a cached
+        # English fallback must not prevent a later Chinese request from
+        # trying the preferred Chinese asset first.
         for locale in locales:
             cache_path = self._cache_path(card_id, kind, locale)
             try:
@@ -479,9 +497,6 @@ class AssetResolver:
                     )
             except OSError:
                 return self._placeholder(media_type)
-
-        for locale in locales:
-            cache_path = self._cache_path(card_id, kind, locale)
             marker_path = self._missing_path(cache_path)
             if self._missing_marker_is_fresh(marker_path):
                 continue

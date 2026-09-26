@@ -9,7 +9,9 @@ from fireplace.utils import random_class, random_draft
 
 
 def build_game(
-    seed: int | None = None, opponent_name: str = "Random"
+    seed: int | None = None,
+    opponent_name: str = "Random",
+    nickname: str = "Human",
 ) -> tuple[Game, Player, Player]:
     """Create the same seeded random match used by the terminal example.
 
@@ -23,7 +25,7 @@ def build_game(
 
     # Empty decks are placeholders while Game owns the seeded RNG.  They are
     # filled before GameSession.start() calls game.start().
-    human = Player("Human", [], "HERO_01")
+    human = Player(nickname, [], "HERO_01")
     opponent = Player(opponent_name, [], "HERO_01")
     game = Game((human, opponent), seed=seed)
 

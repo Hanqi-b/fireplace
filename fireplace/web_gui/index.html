@@ -8,10 +8,58 @@
     <title>Fireplace · 本机对战</title>
     <link rel="stylesheet" href="style.css">
     <script src="action_model.js" defer></script>
+    <script src="i18n.js" defer></script>
     <script src="app.js" defer></script>
   </head>
   <body>
-    <main class="game-shell" id="game" aria-labelledby="page-title">
+    <main class="app-shell" id="app-shell">
+      <section class="lobby-screen" id="lobby-screen" aria-labelledby="lobby-title" hidden>
+        <div class="lobby-scene" aria-hidden="true"></div>
+        <div class="lobby-card" data-testid="lobby">
+          <div class="lobby-brand">
+            <p class="eyebrow">FIREPLACE / LOCAL MATCH</p>
+            <h1 id="lobby-title">本机卡牌对战</h1>
+            <p id="lobby-subtitle">输入昵称，选择语言，与 AI 开始一局。</p>
+          </div>
+          <form class="lobby-form" id="lobby-form">
+            <div class="lobby-field">
+              <label for="nickname-input" id="nickname-label">昵称</label>
+              <input id="nickname-input" name="nickname" type="text" maxlength="24" autocomplete="nickname" required placeholder="例如：旅店老板" data-testid="nickname-input">
+              <p class="field-hint" id="nickname-hint">昵称只保存在这台设备上。</p>
+            </div>
+            <div class="lobby-login-actions" id="lobby-login-actions">
+              <button class="lobby-enter primary-button" id="enter-lobby-button" type="submit" data-testid="enter-lobby">进入大厅</button>
+            </div>
+            <fieldset class="lobby-fieldset">
+              <legend id="language-label">界面语言</legend>
+              <div class="segmented-control" role="group" aria-labelledby="language-label">
+                <button class="segment-button is-selected" id="locale-zhCN" type="button" data-locale="zhCN" data-testid="locale-zhCN" aria-pressed="true">中文</button>
+                <button class="segment-button" id="locale-enUS" type="button" data-locale="enUS" data-testid="locale-enUS" aria-pressed="false">English</button>
+              </div>
+            </fieldset>
+            <div class="lobby-setup" id="lobby-setup" hidden>
+              <fieldset class="lobby-fieldset">
+                <legend id="opponent-label">对手 AI</legend>
+                <div class="opponent-choice" role="radiogroup" aria-labelledby="opponent-label">
+                  <label class="opponent-option is-selected" id="opponent-random-option">
+                    <input type="radio" name="opponent" value="random" checked data-testid="opponent-random">
+                    <span class="option-copy"><strong id="opponent-random-title">随机 AI</strong><small id="opponent-random-description">行动不可预测，适合轻松对局。</small></span>
+                  </label>
+                  <label class="opponent-option" id="opponent-heuristic-option">
+                    <input type="radio" name="opponent" value="heuristic" data-testid="opponent-heuristic">
+                    <span class="option-copy"><strong id="opponent-heuristic-title">聪明 AI</strong><small id="opponent-heuristic-description">会根据场面选择更有利的行动。</small></span>
+                  </label>
+                </div>
+              </fieldset>
+              <button class="lobby-start primary-button" id="start-match-button" type="submit" data-testid="start-match">开始对战</button>
+            </div>
+            <p class="lobby-status" id="lobby-status" role="status" aria-live="polite"></p>
+          </form>
+        </div>
+        <p class="lobby-footer" id="lobby-footer">本机对战 · 无需账号</p>
+      </section>
+
+      <section class="game-shell" id="game" aria-labelledby="page-title" hidden>
       <section class="table" aria-label="战场">
         <div class="board-vignette" aria-hidden="true"></div>
 
@@ -120,6 +168,10 @@
         </section>
         <aside class="below-board-tools" aria-label="备用操作">
           <div class="quick-actions" id="quick-actions" aria-label="当前可用操作" data-testid="quick-actions" hidden></div>
+          <div class="terminal-actions" id="terminal-actions" aria-live="polite" hidden>
+            <span class="terminal-status" id="terminal-status">本局已结束</span>
+            <button class="secondary-button" id="terminal-return" type="button" data-testid="return-home-persistent">返回开始界面</button>
+          </div>
           <details class="fallback-actions" id="action-fallback" data-testid="action-fallback">
             <summary>显示全部合法动作（备用）<span id="fallback-count"></span></summary>
             <div class="action-groups" id="action-menu" aria-live="polite"></div>
@@ -133,6 +185,7 @@
           <h2>对局结束</h2>
           <p id="game-over-message"></p>
           <p class="muted">你可以关闭这个本机页面，或重新启动服务开始新的一局。</p>
+          <button class="primary-button" id="game-over-return" type="button" data-testid="return-home">返回开始界面</button>
           <button class="secondary-button" id="game-over-dismiss" type="button">查看战场与记录</button>
         </div>
       </section>
@@ -145,7 +198,7 @@
           <span id="connection-value">连接中……</span>
         </span>
       </footer>
-    </main>
+      </section>
 
     <div class="card-modal" id="card-modal" role="dialog" aria-modal="true" aria-labelledby="modal-card-name" hidden>
       <div class="card-modal-backdrop" data-modal-close="true"></div>
@@ -163,5 +216,6 @@
         </div>
       </div>
     </div>
+    </main>
   </body>
 </html>
