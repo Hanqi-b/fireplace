@@ -8,6 +8,7 @@
     { field: "taunt", key: "taunt", icon: "guard" },
     { field: "divine_shield", key: "shield", icon: "shield" },
     { field: "poisonous", key: "poisonous", icon: "poison" },
+    { field: "has_deathrattle", key: "deathrattle", icon: "skull" },
     { field: "frozen", key: "frozen", icon: "snow" },
     { field: "stealthed", key: "stealth", icon: "eye" },
     { field: "lifesteal", key: "lifesteal", icon: "heart" },
@@ -25,6 +26,7 @@
     guard: "M12 2 3 6v6c0 5 3.6 8.2 9 10 5.4-1.8 9-5 9-10V6l-9-4Zm0 5v10M8 11h8",
     shield: "M12 2 4 6v6c0 4.6 3.1 8 8 10 4.9-2 8-5.4 8-10V6l-8-4Zm0 4v12m-5-6h10",
     poison: "M12 2c-2.5 4-7 8.5-7 13a7 7 0 0 0 14 0c0-4.5-4.5-9-7-13ZM8.5 15h7m-5-3 3 6m0-6-3 6",
+    skull: "M12 2c-5 0-8 3.4-8 8.4 0 2.8 1.2 4.7 3 5.6v4h10v-4c1.8-.9 3-2.8 3-5.6C20 5.4 17 2 12 2ZM8.5 11h.1m6.8 0h.1M10 16v4m4-4v4",
     snow: "M12 2v20M4 6l16 12M20 6 4 18M9 5l3 3 3-3M9 19l3-3 3 3",
     eye: "M2 12s4-6 10-6 10 6 10 6-4 6-10 6-10-6-10-6Zm10-3a3 3 0 1 1 0 6 3 3 0 0 1 0-6ZM3 21 21 3",
     heart: "M12 21 4 13a5 5 0 0 1 7-7l1 1 1-1a5 5 0 0 1 7 7l-8 8Zm0-13v8m-4-4h8",
@@ -63,6 +65,10 @@
       }
       return { field: definition.field, label: label, icon: definition.icon };
     });
+  }
+
+  function statusSlug(field) {
+    return field === "has_deathrattle" ? "deathrattle" : field.replace(/_/g, "-");
   }
 
   function hideTooltip(host) {
@@ -123,7 +129,7 @@
       return;
     }
     statuses.forEach(function (status) {
-      wrapper.classList.add("has-" + status.field.replace(/_/g, "-"));
+      wrapper.classList.add("has-" + statusSlug(status.field));
     });
     var labels = statuses.map(function (status) { return status.label; }).join(" · ");
     wrapper.setAttribute("aria-label", wrapper.getAttribute("aria-label") + " · " + labels);
@@ -136,19 +142,28 @@
     var rail = document.createElement("div");
     rail.className = "keyword-rail";
     rail.setAttribute("aria-hidden", "true");
-    statuses.slice(0, 3).forEach(function (status) {
+    var railStatuses = statuses.filter(function (status) { return status.field !== "has_deathrattle"; });
+    railStatuses.slice(0, 3).forEach(function (status) {
       var badge = document.createElement("span");
-      badge.className = "keyword-icon keyword-icon-" + status.field.replace(/_/g, "-");
+      badge.className = "keyword-icon keyword-icon-" + statusSlug(status.field);
       badge.appendChild(icon(status.icon));
       rail.appendChild(badge);
     });
-    if (statuses.length > 3) {
+    if (railStatuses.length > 3) {
       var more = document.createElement("span");
       more.className = "keyword-more";
-      more.textContent = "+" + String(statuses.length - 3);
+      more.textContent = "+" + String(railStatuses.length - 3);
       rail.appendChild(more);
     }
     wrapper.appendChild(rail);
+
+    if (card.has_deathrattle === true) {
+      var deathrattle = document.createElement("span");
+      deathrattle.className = "deathrattle-sigil";
+      deathrattle.setAttribute("aria-hidden", "true");
+      deathrattle.appendChild(icon("skull"));
+      wrapper.appendChild(deathrattle);
+    }
 
     if (card.dormant === true) {
       var dormant = document.createElement("span");
@@ -176,7 +191,7 @@
     var statuses = entries(card, tr);
     statuses.forEach(function (status) {
       var chip = document.createElement("span");
-      chip.className = "keyword-detail keyword-detail-" + status.field.replace(/_/g, "-");
+      chip.className = "keyword-detail keyword-detail-" + statusSlug(status.field);
       chip.appendChild(icon(status.icon));
       chip.appendChild(document.createTextNode(status.label));
       container.appendChild(chip);

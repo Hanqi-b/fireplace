@@ -207,6 +207,7 @@ def test_observation_exposes_public_minion_statuses_on_both_boards():
     }
     minions["silenced"].silence()
     opponent_minion = player.opponent.summon("EX1_170")
+    deathrattle_minion = player.opponent.summon("EX1_556")
 
     view = current.observation(player)
     own_board = {card["card_id"]: card for card in view["self"]["board"]}
@@ -229,8 +230,16 @@ def test_observation_exposes_public_minion_statuses_on_both_boards():
 
     assert opponent_board["EX1_170"]["entity_id"] == opponent_minion.entity_id
     assert opponent_board["EX1_170"]["poisonous"] is True
+    assert opponent_board["EX1_556"]["entity_id"] == deathrattle_minion.entity_id
+    assert opponent_board["EX1_556"]["has_deathrattle"] is True
     assert "hand" not in view["opponent"]
     assert "hand_count" in view["opponent"]
+
+    deathrattle_minion.silence()
+    silenced_view = current.observation(player)
+    silenced_minion = next(card for card in silenced_view["opponent"]["board"]
+                            if card["entity_id"] == deathrattle_minion.entity_id)
+    assert silenced_minion["has_deathrattle"] is False
 
 
 def test_weapon_hero_attack_uses_attack_action():

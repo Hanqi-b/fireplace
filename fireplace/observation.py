@@ -178,6 +178,7 @@ def _character(card, include_position=False):
             "frozen": _bool(_get(card, "frozen")),
             "stealthed": _bool(_get(card, "stealthed")),
             "poisonous": _bool(_get(card, "poisonous")),
+            "has_deathrattle": _bool(_get(card, "has_deathrattle")),
             "dormant": dormant,
             "lifesteal": _bool(_get(card, "lifesteal")),
             "reborn": _bool(_get(card, "reborn")),

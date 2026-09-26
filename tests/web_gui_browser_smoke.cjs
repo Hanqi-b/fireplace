@@ -541,7 +541,8 @@ async function main() {
     ];
     visual.observation.self.board = [
       { entity_id: 91511, card_id: "CS2_231", name: "词条测试随从", atk: 3, health: 4,
-        max_health: 4, taunt: true, divine_shield: true, poisonous: true, lifesteal: true },
+        max_health: 4, taunt: true, divine_shield: true, poisonous: true,
+        has_deathrattle: true, lifesteal: true },
       { entity_id: 91512, card_id: "CS2_231", name: "休眠测试随从", atk: 2, health: 2,
         max_health: 2, dormant: true, dormant_turns: 2 },
     ];
@@ -604,9 +605,12 @@ async function main() {
       node.classList.contains("has-divine-shield") && node.classList.contains("has-poisonous")));
     assert.equal(await keywordMinion.locator(".keyword-icon").count(), 3);
     assert.equal(await keywordMinion.locator(".keyword-more").innerText(), "+1");
+    assert(await keywordMinion.evaluate((node) => node.classList.contains("has-deathrattle")));
+    assert.equal(await keywordMinion.locator(".deathrattle-sigil svg").count(), 1,
+      "deathrattle must have its own visible mark even when other keywords overflow");
     assert.equal(await keywordMinion.getAttribute("title"), null,
       "custom keyword tooltip should not compete with the browser title tooltip");
-    assert.match(await keywordMinion.getAttribute("aria-label"), /嘲讽.*圣盾.*剧毒.*吸血/);
+    assert.match(await keywordMinion.getAttribute("aria-label"), /嘲讽.*圣盾.*剧毒.*亡语.*吸血/);
     assert.equal(await dormantMinion.locator(".dormant-counter").innerText(), "2");
     assert.match(await dormantMinion.getAttribute("aria-label"), /休眠.*剩余 2 回合/);
     assert(await visualPage.locator('#opponent-board .board-card[data-entity-id="91513"]')
@@ -617,7 +621,7 @@ async function main() {
     await visualPage.screenshot({ path: path.join(artifacts, "web-gui-board-keywords-hover.png"), fullPage: true });
     await keywordMinion.locator('[data-testid="card-inspect"]').click();
     await visualPage.locator("#card-modal").waitFor({ state: "visible", timeout });
-    assert.match(await visualPage.locator("#modal-statuses").innerText(), /嘲讽.*圣盾.*剧毒.*吸血/s);
+    assert.match(await visualPage.locator("#modal-statuses").innerText(), /嘲讽.*圣盾.*剧毒.*亡语.*吸血/s);
     await visualPage.locator("#modal-close").click();
     await dormantMinion.locator('[data-testid="card-inspect"]').click();
     assert.match(await visualPage.locator("#modal-statuses").innerText(), /休眠.*剩余 2 回合/);
@@ -637,6 +641,16 @@ async function main() {
     assert.equal(await dormantMinion.locator(".dormant-counter").innerText(), "2");
     assert(await keywordMinion.locator(".stat.health strong").isVisible(),
       "keyword layer must leave the minion health visible on mobile");
+    const deathrattleGeometry = await keywordMinion.evaluate((node) => {
+      const sigil = node.querySelector(".deathrattle-sigil").getBoundingClientRect();
+      return [...node.querySelectorAll(".stat.attack, .stat.health, .keyword-more")].map((stat) => {
+        const rect = stat.getBoundingClientRect();
+        return sigil.left < rect.right && sigil.right > rect.left &&
+          sigil.top < rect.bottom && sigil.bottom > rect.top;
+      });
+    });
+    assert(deathrattleGeometry.every((overlap) => !overlap),
+      "deathrattle mark must not cover mobile combat stats or other keyword badges");
     const mobileKeywordGeometry = await keywordMinion.evaluate((node) => {
       const more = node.querySelector(".keyword-more").getBoundingClientRect();
       const attack = node.querySelector(".stat.attack").getBoundingClientRect();
@@ -657,7 +671,7 @@ async function main() {
     await visualPage.reload({ waitUntil: "domcontentloaded" });
     await dormantMinion.waitFor({ state: "visible", timeout });
     assert.match(await dormantMinion.getAttribute("aria-label"), /Dormant.*2 turns left/);
-    assert.match(await keywordMinion.getAttribute("aria-label"), /Taunt.*Divine shield.*Poisonous.*Lifesteal/);
+    assert.match(await keywordMinion.getAttribute("aria-label"), /Taunt.*Divine shield.*Poisonous.*Deathrattle.*Lifesteal/);
     await dormantMinion.locator('[data-testid="card-inspect"]').click();
     assert.match(await visualPage.locator("#modal-statuses").innerText(), /Dormant.*2 turns left/);
     visual.revision += 1;
@@ -668,6 +682,15 @@ async function main() {
     assert.equal(await dormantMinion.locator(".dormant-counter").count(), 0);
     assert(await visualPage.locator("#modal-statuses").evaluate((node) => node.hidden),
       "open details must drop dormant state when the next snapshot wakes the minion");
+    await visualPage.locator("#modal-close").click();
+    await keywordMinion.locator('[data-testid="card-inspect"]').click();
+    assert.match(await visualPage.locator("#modal-statuses").innerText(), /Deathrattle/);
+    visual.revision += 1;
+    visual.observation.self.board[0].has_deathrattle = false;
+    await visualPage.evaluate(() => window.fireplaceWebGui.loadState(true));
+    assert.equal(await keywordMinion.locator(".deathrattle-sigil").count(), 0);
+    assert(!await visualPage.locator("#modal-statuses").innerText().then((value) => value.includes("Deathrattle")),
+      "open details must drop deathrattle after the next public snapshot removes it");
     await visualPage.locator("#modal-close").click();
     await visualPage.close();
 

@@ -1111,10 +1111,29 @@ html[lang="en"] .board:empty::before {
 
 .keyword-icon svg,
 .keyword-tooltip svg,
-.keyword-detail svg {
+.keyword-detail svg,
+.deathrattle-sigil svg {
   width: 72%;
   height: 72%;
   flex: none;
+}
+
+.deathrattle-sigil {
+  position: absolute;
+  z-index: 4;
+  bottom: 15px;
+  left: 50%;
+  display: grid;
+  width: clamp(18px, 1.8vw, 24px);
+  height: clamp(18px, 1.8vw, 24px);
+  transform: translateX(-50%);
+  place-items: center;
+  border: 2px solid #dbb4f2;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 25%, #8665a6, #302044 70%);
+  box-shadow: 0 2px 6px #100a19, 0 0 10px rgb(191 124 241 / 75%);
+  color: #fff1ff;
+  pointer-events: none;
 }
 
 .keyword-icon-poisonous,
@@ -1141,6 +1160,11 @@ html[lang="en"] .board:empty::before {
 .keyword-detail-stealthed {
   border-color: #bfa9e4;
   color: #d6c3ff;
+}
+
+.keyword-detail-deathrattle {
+  border-color: #d6a8f3;
+  color: #f0d9ff;
 }
 
 .keyword-more {
@@ -2872,6 +2896,11 @@ html[lang="en"] .decision-section.phase-mulligan::after {
     max-width: 76px;
     min-width: 64px;
     border-width: 3px;
+  }
+
+  .deathrattle-sigil {
+    bottom: 31px;
+    left: 68%;
   }
 
   .board-slot {
