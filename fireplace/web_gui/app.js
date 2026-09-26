@@ -260,11 +260,13 @@
       "opponent-hand-count",
       "opponent-mana-value",
       "opponent-hand",
+      "opponent-hero-status",
       "opponent-hero-row",
       "opponent-extras",
       "opponent-board-count",
       "opponent-board",
       "self-hero-row",
+      "self-hero-status",
       "self-extras",
       "self-board-count",
       "self-board",
@@ -478,6 +480,12 @@
     }
     if (elements["self-extras"]) {
       elements["self-extras"].setAttribute("aria-label", tr("yourExtrasAria"));
+    }
+    if (elements["opponent-hero-status"]) {
+      elements["opponent-hero-status"].setAttribute("aria-label", tr("opponentHeroStatusesAria"));
+    }
+    if (elements["self-hero-status"]) {
+      elements["self-hero-status"].setAttribute("aria-label", tr("yourHeroStatusesAria"));
     }
     if (elements["choice-options"]) {
       elements["choice-options"].setAttribute("aria-label", tr("choiceOptions"));
@@ -1228,10 +1236,14 @@
     clear(elements["self-board"]);
     clear(elements["opponent-board"]);
     clear(elements["self-hero-row"]);
+    clear(elements["self-hero-status"]);
     elements["self-hero-row"].closest(".self-panel").classList.remove("promote-interaction");
     clear(elements["opponent-hero-row"]);
+    clear(elements["opponent-hero-status"]);
     clear(elements["self-extras"]);
     clear(elements["opponent-extras"]);
+    setHidden(elements["self-hero-status"], true);
+    setHidden(elements["opponent-hero-status"], true);
     setHidden(elements["self-extras"], true);
     setHidden(elements["opponent-extras"], true);
     clear(elements["hero-power-row"]);
@@ -1267,6 +1279,8 @@
     renderHiddenHand(opponent.hand_count);
     renderHero(elements["opponent-hero-row"], opponent.hero, false, opponent.hero_power);
     renderHero(elements["self-hero-row"], self.hero, true, self.hero_power);
+    renderHeroStatuses(elements["opponent-hero-status"], opponent, false);
+    renderHeroStatuses(elements["self-hero-status"], self, true);
     renderExtras(elements["opponent-extras"], opponent, false);
     renderExtras(elements["self-extras"], self, true);
     renderBoard(elements["opponent-board"], opponent.board, false);
@@ -1416,24 +1430,113 @@
       weaponButton.addEventListener("click", function () { openCardModal(weapon); });
       container.appendChild(weaponButton);
     }
+    setHidden(container, !container.childNodes.length);
+  }
+
+  function renderHeroStatuses(container, player, own) {
+    clear(container);
+    if (!isObject(player)) {
+      setHidden(container, true);
+      return;
+    }
+
+    var quests = asArray(player.quests).filter(isObject);
     if (own) {
-      asArray(player.secrets).forEach(function (secret) {
-        var secretButton = document.createElement("button");
-        secretButton.type = "button";
-        secretButton.className = "extra-chip secret-chip";
-        secretButton.setAttribute("data-testid", "self-secret");
-        secretButton.textContent = tr("secrets") + ": " + cardName(secret);
-        secretButton.addEventListener("click", function () { openCardModal(secret); });
-        container.appendChild(secretButton);
-      });
-    } else if (safeNumber(player.secrets_count, 0) > 0) {
-      var hiddenSecrets = document.createElement("span");
-      hiddenSecrets.className = "extra-chip secret-chip hidden-secret";
-      hiddenSecrets.setAttribute("data-testid", "opponent-secret-count");
-      hiddenSecrets.textContent = tr("opponentSecrets", { value: player.secrets_count });
-      container.appendChild(hiddenSecrets);
+      var secrets = asArray(player.secrets).filter(isObject);
+      if (secrets.length) {
+        appendHeroStatusGroup(container, "secret", tr("secrets"), secrets, true);
+      }
+    } else {
+      var secretCount = Math.max(0, safeNumber(player.secrets_count, 0));
+      if (secretCount > 0) {
+        appendHiddenSecretGroup(container, secretCount);
+      }
+    }
+    if (quests.length) {
+      appendHeroStatusGroup(container, "quest", tr("quests"), quests, own);
     }
     setHidden(container, !container.childNodes.length);
+  }
+
+  function appendHeroStatusGroup(container, kind, label, cards, own) {
+    var group = document.createElement("section");
+    group.className = "hero-status-group hero-status-group-" + kind;
+    group.setAttribute("aria-label", label);
+    var heading = document.createElement("h3");
+    heading.className = "hero-status-heading";
+    heading.textContent = label;
+    group.appendChild(heading);
+    var list = document.createElement("div");
+    list.className = "hero-status-list";
+    cards.forEach(function (card) {
+      list.appendChild(createHeroStatusCard(card, kind, own));
+    });
+    group.appendChild(list);
+    container.appendChild(group);
+  }
+
+  function appendHiddenSecretGroup(container, count) {
+    var group = document.createElement("section");
+    group.className = "hero-status-group hero-status-group-secret opponent-secret-group";
+    group.setAttribute("aria-label", tr("opponentSecrets", { value: count }));
+    var heading = document.createElement("h3");
+    heading.className = "hero-status-heading";
+    heading.textContent = tr("secrets");
+    group.appendChild(heading);
+    var tokenRack = document.createElement("div");
+    tokenRack.className = "hero-status-list secret-token-list";
+    tokenRack.setAttribute("data-testid", "opponent-secret-count");
+    tokenRack.setAttribute("aria-label", tr("opponentSecrets", { value: count }));
+    var visibleTokens = Math.min(count, 4);
+    for (var index = 0; index < visibleTokens; index += 1) {
+      var token = document.createElement("span");
+      token.className = "secret-back-token";
+      token.setAttribute("aria-hidden", "true");
+      token.style.setProperty("--secret-index", String(index));
+      tokenRack.appendChild(token);
+    }
+    var countLabel = document.createElement("span");
+    countLabel.className = "secret-count-label";
+    countLabel.textContent = "×" + String(count);
+    tokenRack.appendChild(countLabel);
+    group.appendChild(tokenRack);
+    container.appendChild(group);
+  }
+
+  function createHeroStatusCard(card, kind, own) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "hero-status-card " + kind + "-status-card";
+    button.setAttribute("data-testid", kind === "quest"
+      ? (own ? "self-quest" : "opponent-quest")
+      : "self-secret");
+    var progress = optionalNumber(card.progress);
+    var total = optionalNumber(card.progress_total);
+    var progressText = "";
+    if (kind === "quest" && progress !== null) {
+      progressText = total === null
+        ? tr("questProgressValue", { value: progress })
+        : tr("questProgress", { value: progress, total: total });
+    }
+    var label = cardName(card) + (progressText ? " · " + progressText : "");
+    button.setAttribute("aria-label", label);
+    button.title = label;
+    button.appendChild(createCardArt(card, "tile"));
+    var copy = document.createElement("span");
+    copy.className = "hero-status-copy";
+    var name = document.createElement("span");
+    name.className = "hero-status-name";
+    name.textContent = cardName(card);
+    copy.appendChild(name);
+    if (progressText) {
+      var progressNode = document.createElement("span");
+      progressNode.className = "quest-progress";
+      progressNode.textContent = progressText;
+      copy.appendChild(progressNode);
+    }
+    button.appendChild(copy);
+    button.addEventListener("click", function () { openCardModal(card); });
+    return button;
   }
 
   function renderBoard(container, board, own) {

@@ -343,6 +343,35 @@ def test_observation_hides_opponent_hand_and_secret_identity():
     assert str(opponent_hand_id) not in json.dumps(data["opponent"])
 
 
+def test_active_quests_are_public_but_opponent_secrets_stay_concealed():
+    current = session(hero=CardClass.DRUID.default_hero)
+    finish_mulligan(current)
+    player = current.game.current_player
+    player.max_mana = 10
+    quest = player.give("UNG_116")
+    sidequest = player.give("DRG_051")
+    secret = player.give("EX1_287")
+    for card in (quest, sidequest, secret):
+        play = next(action for action in current.legal_actions(player)
+                    if action.type == "PLAY_CARD" and action.source_entity_id == card.entity_id)
+        current.execute(player, play)
+    quest.progress = 2
+    sidequest.progress = 4
+
+    own = current.observation(player)["self"]
+    seen_by_opponent = current.observation(player.opponent)["opponent"]
+    assert [card["card_id"] for card in own["secrets"]] == ["EX1_287"]
+    assert own["quests"] == seen_by_opponent["quests"]
+    assert [(card["card_id"], card["kind"], card["progress"], card["progress_total"])
+            for card in own["quests"]] == [
+                ("UNG_116", "quest", 2, 5),
+                ("DRG_051", "sidequest", 4, 10),
+            ]
+    assert seen_by_opponent["secrets_count"] == 1
+    assert "secrets" not in seen_by_opponent
+    assert "EX1_287" not in json.dumps(seen_by_opponent)
+
+
 def test_opponent_cannot_see_secret_or_pending_discover_options():
     mage = session(hero=CardClass.MAGE.default_hero)
     finish_mulligan(mage)

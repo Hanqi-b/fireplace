@@ -299,6 +299,28 @@ def _count(value):
         return 0
 
 
+def _secret_kind(card):
+    """Distinguish concealed Secrets from public Quests in one engine zone."""
+
+    spelltype = _enum_name(_get(card, "spelltype"))
+    data = _get(card, "data")
+    if spelltype == "QUEST" or _bool(_get(data, "quest")):
+        return "quest"
+    if spelltype == "SIDEQUEST" or _bool(_get(data, "sidequest")):
+        return "sidequest"
+    return "secret"
+
+
+def _quest_identity(card):
+    result = _card_identity(card)
+    result.update({
+        "kind": _secret_kind(card),
+        "progress": max(0, _int(_get(card, "progress"))),
+        "progress_total": _optional_int(_get(card, "progress_total")),
+    })
+    return result
+
+
 def _player_projection(player, viewer, include_private):
     hero = _get(player, "hero")
     hero_power = _get(player, "hero_power")
@@ -309,6 +331,8 @@ def _player_projection(player, viewer, include_private):
     deck = _get(player, "deck")
     hand = _cards(_get(player, "hand"))
     secrets = _cards(_get(player, "secrets"))
+    concealed_secrets = [card for card in secrets if _secret_kind(card) == "secret"]
+    public_quests = [card for card in secrets if _secret_kind(card) != "secret"]
 
     result = {
         "hero": _character(hero, viewer) if hero is not None else None,
@@ -318,6 +342,7 @@ def _player_projection(player, viewer, include_private):
         "mana": _int(_get(player, "mana")),
         "max_mana": _int(_get(player, "max_mana")),
         "deck_count": _count(deck),
+        "quests": [_quest_identity(card) for card in public_quests],
     }
     if include_private:
         result["hand"] = [
@@ -331,11 +356,11 @@ def _player_projection(player, viewer, include_private):
                     _card_identity(option) for option in options
                 ]
         result["secrets"] = [
-            _card_identity(card, include_cost=True) for card in secrets
+            _card_identity(card, include_cost=True) for card in concealed_secrets
         ]
     else:
         result["hand_count"] = len(hand)
-        result["secrets_count"] = len(secrets)
+        result["secrets_count"] = len(concealed_secrets)
     return result
 
 

@@ -719,6 +719,192 @@ button:disabled {
   z-index: 16;
 }
 
+/* Secrets and quests sit in the same visual lane as a hero's portrait.  They
+   remain compact so the tabletop art and combat stats keep their fixed space. */
+.hero-status-rack {
+  position: absolute;
+  z-index: 13;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  width: 48%;
+  min-height: 0;
+  gap: clamp(5px, .65vw, 10px);
+  pointer-events: auto;
+}
+
+.opponent-panel .hero-status-rack {
+  /* The opponent's hand backs occupy the top edge.  Place statuses on the
+     hero's upper frame, just below that fan, rather than behind it. */
+  top: 7.8%;
+  left: 26%;
+}
+
+.self-panel .hero-status-rack {
+  /* Anchor the rack to the upper frame of the own portrait.  The compact
+     tiles fit over the empty lower edge of the board without reaching its
+     combat stat strip. */
+  bottom: 33%;
+  left: 26%;
+}
+
+.hero-status-group {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+
+.hero-status-heading {
+  margin: 0;
+  color: #ffe3ad;
+  font-size: clamp(.44rem, .54vw, .56rem);
+  font-weight: 850;
+  letter-spacing: .08em;
+  line-height: .85;
+  text-shadow: 0 2px 3px #000;
+}
+
+.hero-status-list {
+  display: flex;
+  min-width: 0;
+  align-items: flex-end;
+  justify-content: center;
+  gap: clamp(3px, .35vw, 6px);
+}
+
+.hero-status-card {
+  display: flex;
+  align-items: center;
+  width: clamp(82px, 9.4vw, 144px);
+  min-width: 0;
+  min-height: 30px;
+  border: 1px solid rgb(244 211 149 / 72%);
+  border-radius: 8px;
+  padding: 3px 5px;
+  background: linear-gradient(145deg, rgb(48 37 42 / 97%), rgb(17 20 31 / 97%));
+  box-shadow: inset 0 1px rgb(255 233 174 / 20%), 0 5px 12px rgb(0 0 0 / 55%);
+  color: var(--parchment);
+  cursor: pointer;
+  text-align: left;
+  text-shadow: 0 1px 2px #000;
+}
+
+.hero-status-card:hover,
+.hero-status-card:focus-visible {
+  border-color: var(--gold-light);
+  box-shadow: 0 0 0 2px rgb(244 211 149 / 28%), 0 7px 16px rgb(0 0 0 / 65%);
+  transform: translateY(-2px);
+}
+
+.hero-status-card .card-art,
+.hero-status-card .card-art img {
+  width: clamp(24px, 2.1vw, 30px);
+  height: clamp(24px, 2.1vw, 30px);
+  min-height: 0;
+}
+
+.hero-status-card .card-art {
+  flex: 0 0 auto;
+  border: 2px ridge #bd8e50;
+  border-radius: 6px;
+  background: #1b2434;
+}
+
+.hero-status-card .card-art img {
+  object-fit: cover;
+}
+
+.hero-status-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  margin-left: 5px;
+}
+
+.hero-status-name,
+.quest-progress {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hero-status-name {
+  color: #fff1c8;
+  font-size: clamp(.5rem, .62vw, .62rem);
+  font-weight: 800;
+}
+
+.quest-progress {
+  color: var(--mana);
+  font-size: clamp(.48rem, .59vw, .6rem);
+  font-variant-numeric: tabular-nums;
+}
+
+.secret-token-list {
+  position: relative;
+  min-height: 30px;
+  min-width: 74px;
+  padding: 2px 7px 2px 3px;
+}
+
+.secret-back-token {
+  display: block;
+  width: 21px;
+  height: 27px;
+  margin-left: -9px;
+  border: 2px ridge #bd8e50;
+  border-radius: 6px;
+  background:
+    radial-gradient(circle, #288b9a 0 14%, #b59c65 15% 19%, #253d5e 20% 45%, #5b263c 46% 65%, #1b2030 66%),
+    repeating-linear-gradient(135deg, #243855 0 5px, #1a2942 5px 10px);
+  box-shadow: inset 0 0 0 1px #251518, 0 3px 6px rgb(0 0 0 / 75%);
+  transform: translateY(calc(var(--secret-index, 0) * -1px)) rotate(calc((var(--secret-index, 0) - 1.5) * 4deg));
+}
+
+.secret-back-token:first-child {
+  margin-left: 0;
+}
+
+.secret-count-label {
+  align-self: center;
+  margin-left: 3px;
+  color: var(--gold-light);
+  font-size: .7rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+@media (min-width: 701px) and (max-width: 1100px) {
+  .self-panel .hero-status-rack {
+    bottom: 27%;
+  }
+
+  .hero-status-group {
+    flex: 1 1 0;
+    max-width: 50%;
+  }
+
+  .hero-status-list {
+    width: 100%;
+    max-width: 100%;
+    justify-content: flex-start;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-color: #a47841 transparent;
+    scrollbar-width: thin;
+  }
+
+  .hero-status-card {
+    flex: 0 0 86px;
+    min-height: 36px;
+  }
+}
+
 .hero-card {
   position: relative;
   display: block;
@@ -2850,6 +3036,86 @@ html[lang="en"] .decision-section.phase-mulligan::after {
   .self-panel .hero-row {
     bottom: 19%;
     left: 32%;
+  }
+
+  .hero-status-rack {
+    width: 68%;
+    gap: 3px;
+  }
+
+  .opponent-panel .hero-status-rack {
+    top: 7.8%;
+    left: 16%;
+  }
+
+  .self-panel .hero-status-rack {
+    bottom: 33%;
+    left: 25%;
+    width: 60%;
+  }
+
+  .hero-status-group {
+    flex: 1 1 0;
+    max-width: 100%;
+    gap: 2px;
+  }
+
+  .hero-status-heading {
+    font-size: .45rem;
+  }
+
+  .hero-status-list {
+    width: 100%;
+    max-width: 100%;
+    justify-content: flex-start;
+    gap: 2px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 1px 2px 3px;
+    scrollbar-color: #a47841 transparent;
+    scrollbar-width: thin;
+  }
+
+  .hero-status-card {
+    width: 84px;
+    min-height: 35px;
+    padding: 2px 3px;
+    border-radius: 6px;
+  }
+
+  .hero-status-card .card-art,
+  .hero-status-card .card-art img {
+    width: 25px;
+    height: 29px;
+  }
+
+  .hero-status-copy {
+    max-width: 47px;
+    margin-left: 3px;
+  }
+
+  .hero-status-name {
+    font-size: .46rem;
+  }
+
+  .quest-progress {
+    font-size: .43rem;
+  }
+
+  .secret-token-list {
+    min-height: 35px;
+    min-width: 60px;
+    padding-right: 3px;
+  }
+
+  .secret-back-token {
+    width: 20px;
+    height: 28px;
+    margin-left: -8px;
+  }
+
+  .secret-count-label {
+    font-size: .56rem;
   }
 
   .hero-card .card-art {

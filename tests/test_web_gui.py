@@ -360,6 +360,36 @@ def test_opponent_secret_stays_hidden_in_snapshot_log_and_assets(web_game):
     assert status == 404
 
 
+def test_opponent_quests_become_visible_above_hero_without_revealing_secret(web_game):
+    app, _human, opponent, base = web_game(hero=CardClass.DRUID.default_hero)
+    state = ready(base)
+    opponent.max_mana = 10
+    quest = opponent.give("UNG_116")
+    sidequest = opponent.give("DRG_051")
+    secret = opponent.give("EX1_287")
+
+    class QuestAgent:
+        def choose_action(self, observation, actions):
+            for card in (quest, sidequest, secret):
+                play = next((item for item in actions if item.type == "PLAY_CARD"
+                             and item.source_entity_id == card.entity_id), None)
+                if play:
+                    return play
+            return next(item for item in actions if item.type == "END_TURN")
+
+    app.opponent_agent = QuestAgent()
+    status, state = submit(base, state, action(state, "END_TURN"))
+    assert status == 200
+    opponent_state = state["observation"]["opponent"]
+    assert [card["card_id"] for card in opponent_state["quests"]] == ["UNG_116", "DRG_051"]
+    assert [card["kind"] for card in opponent_state["quests"]] == ["quest", "sidequest"]
+    assert [card["progress_total"] for card in opponent_state["quests"]] == [5, 10]
+    assert opponent_state["secrets_count"] == 1
+    assert "EX1_287" not in json.dumps(state)
+    assert all(card["entity_id"] != secret.entity_id for card in opponent_state["quests"])
+    assert any(event.get("source_entity_id") == quest.entity_id for event in state["events"])
+
+
 def test_delayed_locale_description_updates_historical_event_without_private_ids(
     web_game,
 ):

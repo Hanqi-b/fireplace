@@ -489,7 +489,15 @@ async function main() {
     mock.observation.self.secrets = [
       { entity_id: 90002, card_id: "EX1_611", name: "测试奥秘" },
     ];
+    mock.observation.self.quests = [
+      { entity_id: 90004, card_id: "UNG_940", name: "测试任务", kind: "quest", progress: 2, progress_total: 10,
+        text: "完成测试目标。" },
+    ];
     mock.observation.opponent.secrets_count = 2;
+    mock.observation.opponent.quests = [
+      { entity_id: 90005, card_id: "UNG_940", name: "对手任务", kind: "sidequest", progress: 1, progress_total: 3,
+        text: "完成另一个测试目标。" },
+    ];
     mock.observation.opponent.hero_power = {
       entity_id: 90003, card_id: "CS2_083b", name: "火焰冲击", cost: 2, is_usable: false,
     };
@@ -513,12 +521,159 @@ async function main() {
     assert.match(await mockPage.locator('[data-testid="self-weapon"]').innerText(), /测试武器/);
     assert.match(await mockPage.locator('[data-testid="self-secret"]').innerText(), /测试奥秘/);
     assert.match(await mockPage.locator('[data-testid="opponent-secret-count"]').innerText(), /×2/);
+    assert.equal(await mockPage.locator('#self-hero-status [data-testid="self-secret"]').count(), 1);
+    assert.equal(await mockPage.locator('#self-extras [data-testid="self-secret"]').count(), 0,
+      "secrets belong in the hero status rack, not the weapon row");
+    assert.match(await mockPage.locator('[data-testid="self-quest"]').innerText(), /测试任务.*2 \/ 10/s);
+    assert.match(await mockPage.locator('[data-testid="opponent-quest"]').innerText(), /对手任务.*1 \/ 3/s);
+    assert.equal(await mockPage.locator('#opponent-hero-status [data-testid="opponent-secret-count"]').count(), 1);
     assert.match(await mockPage.locator('[data-testid="opponent-hero"]').innerText(), /火焰冲击/);
     assert.equal(await mockPage.locator('[data-testid="hidden-opponent-card"]').count(), 3);
     assert(!await mockPage.locator("body").innerText().then((text) => text.includes(privateMarker)));
     await mockPage.locator("#game-over-dismiss").click();
     await mockPage.locator('[data-testid="game-over"]').waitFor({ state: "hidden", timeout });
+    await mockPage.locator('[data-testid="self-quest"] [data-testid="card-inspect"]').count().then(async (count) => {
+      assert.equal(count, 0, "status cards use the whole tile as their detail control");
+    });
+    await mockPage.locator('[data-testid="self-quest"]').click();
+    await mockPage.locator("#card-modal").waitFor({ state: "visible", timeout });
+    assert.match(await mockPage.locator("#modal-card-name").innerText(), /测试任务/);
+    assert.match(await mockPage.locator("#modal-card-text").innerText(), /完成测试目标/);
+    await mockPage.locator("#modal-close").click();
+    await mockPage.locator('[data-testid="opponent-quest"]').click();
+    await mockPage.locator("#card-modal").waitFor({ state: "visible", timeout });
+    assert.match(await mockPage.locator("#modal-card-name").innerText(), /对手任务/);
+    await mockPage.locator("#modal-close").click();
+    const desktopStatusGeometry = await mockPage.evaluate(() => {
+      const rack = document.querySelector("#self-hero-status").getBoundingClientRect();
+      const hero = document.querySelector("#self-hero-row .hero-card .card-art").getBoundingClientRect();
+      const stats = [...document.querySelectorAll("#self-board .stat")].map((node) => node.getBoundingClientRect());
+      return {
+        rack: { top: rack.top, bottom: rack.bottom },
+        hero: { top: hero.top, bottom: hero.bottom },
+        stats: stats.map((stat) => ({ top: stat.top, bottom: stat.bottom, left: stat.left, right: stat.right })),
+        intersectsStats: stats.some((stat) => rack.left < stat.right && rack.right > stat.left &&
+          rack.top < stat.bottom && rack.bottom > stat.top),
+      };
+    });
+    assert(!desktopStatusGeometry.intersectsStats,
+      `desktop hero statuses must not cover minion combat stats: ${JSON.stringify(desktopStatusGeometry)}`);
+    assert(desktopStatusGeometry.rack.bottom >= desktopStatusGeometry.hero.top - 24 &&
+      desktopStatusGeometry.rack.bottom <= desktopStatusGeometry.hero.top + 18,
+    `desktop hero statuses must stay on the portrait frame: ${JSON.stringify(desktopStatusGeometry)}`);
     await mockPage.screenshot({ path: path.join(artifacts, "web-gui-mocked-extras.png"), fullPage: true });
+
+    // Five active secrets are legal in Fireplace.  Keep every own marker
+    // operable through a contained horizontal rack instead of letting the
+    // status row push the board outside a narrow viewport.
+    const crowdedStatuses = JSON.parse(JSON.stringify(mock));
+    crowdedStatuses.revision += 1;
+    crowdedStatuses.observation.self.secrets = Array.from({ length: 5 }, (_, index) => ({
+      entity_id: 90100 + index, card_id: "EX1_611", name: `测试奥秘 ${index + 1}`,
+    }));
+    crowdedStatuses.observation.self.quests = [
+      { entity_id: 90110, card_id: "UNG_940", name: "测试任务 A", kind: "quest", progress: 4, progress_total: 10 },
+      { entity_id: 90111, card_id: "UNG_940", name: "测试任务 B", kind: "sidequest", progress: 1, progress_total: null },
+    ];
+    crowdedStatuses.observation.opponent.secrets_count = 5;
+    crowdedStatuses.observation.opponent.quests = [
+      { entity_id: 90112, card_id: "UNG_940", name: "对手任务 A", kind: "quest", progress: 2, progress_total: 8 },
+      { entity_id: 90113, card_id: "UNG_940", name: "对手任务 B", kind: "sidequest", progress: 1, progress_total: 3 },
+    ];
+    let crowdedStatusPayload = crowdedStatuses;
+    const crowdedStatusPage = await context.newPage();
+    crowdedStatusPage.setDefaultTimeout(timeout);
+    await crowdedStatusPage.setViewportSize({ width: 390, height: 844 });
+    await crowdedStatusPage.route("**/api/state", (route) => route.fulfill({
+      status: 200, contentType: "application/json; charset=utf-8", body: JSON.stringify(crowdedStatusPayload),
+    }));
+    await crowdedStatusPage.goto(endpoint.url, { waitUntil: "domcontentloaded" });
+    await waitForPhase(crowdedStatusPage, "对局结束");
+    await assertNoHorizontalOverflow(crowdedStatusPage, "mobile crowded hero statuses");
+    assert.equal(await crowdedStatusPage.locator('[data-testid="self-secret"]').count(), 5);
+    assert.equal(await crowdedStatusPage.locator('[data-testid="self-quest"]').count(), 2);
+    assert.equal(await crowdedStatusPage.locator('[data-testid="opponent-quest"]').count(), 2);
+    assert.match(await crowdedStatusPage.locator('[data-testid="self-quest"]').first().innerText(), /4 \/ 10/);
+    assert.match(await crowdedStatusPage.locator('[data-testid="self-quest"]').nth(1).innerText(), /进度 1/);
+    const statusGeometry = await crowdedStatusPage.evaluate(() => {
+      const rack = document.querySelector("#self-hero-status").getBoundingClientRect();
+      const opponentRack = document.querySelector("#opponent-hero-status").getBoundingClientRect();
+      const opponentHand = document.querySelector("#opponent-hand").getBoundingClientRect();
+      const list = document.querySelector("#self-hero-status .hero-status-list");
+      const hero = document.querySelector("#self-hero-row .hero-card .card-art").getBoundingClientRect();
+      const mana = document.querySelector("#mana-value").getBoundingClientRect();
+      const rackIntersectsStats = [...document.querySelectorAll("#self-board .stat")].some((node) => {
+        const stat = node.getBoundingClientRect();
+        return rack.left < stat.right && rack.right > stat.left &&
+          rack.top < stat.bottom && rack.bottom > stat.top;
+      });
+      return {
+        rack: { left: rack.left, right: rack.right, top: rack.top, bottom: rack.bottom },
+        opponentRack: { top: opponentRack.top, bottom: opponentRack.bottom },
+        opponentHand: { top: opponentHand.top, bottom: opponentHand.bottom },
+        list: { clientWidth: list.clientWidth, scrollWidth: list.scrollWidth },
+        hero: { top: hero.top, bottom: hero.bottom },
+        mana: { left: mana.left, right: mana.right, top: mana.top, bottom: mana.bottom },
+        rackIntersectsMana: rack.left < mana.right && rack.right > mana.left &&
+          rack.top < mana.bottom && rack.bottom > mana.top,
+        rackIntersectsStats,
+        viewport: innerWidth,
+      };
+    });
+    assert(statusGeometry.rack.left >= 0 && statusGeometry.rack.right <= statusGeometry.viewport,
+      `hero status rack must stay inside mobile viewport: ${JSON.stringify(statusGeometry)}`);
+    assert(statusGeometry.rack.bottom <= statusGeometry.hero.top + 12 &&
+      statusGeometry.rack.bottom >= statusGeometry.hero.top - 26,
+    `hero statuses must stay attached to the portrait frame: ${JSON.stringify(statusGeometry)}`);
+    assert(!statusGeometry.rackIntersectsStats,
+      `own hero statuses must not cover minion combat stats: ${JSON.stringify(statusGeometry)}`);
+    assert(!statusGeometry.rackIntersectsMana,
+      `own hero statuses must not cover the mana display: ${JSON.stringify(statusGeometry)}`);
+    assert(statusGeometry.opponentRack.top >= statusGeometry.opponentHand.bottom - 2,
+      `opponent statuses must remain below the hand backs: ${JSON.stringify(statusGeometry)}`);
+    assert(statusGeometry.list.scrollWidth >= statusGeometry.list.clientWidth,
+      `five own secrets need a contained status scroller: ${JSON.stringify(statusGeometry)}`);
+    await crowdedStatusPage.locator("#game-over-dismiss").click();
+    await crowdedStatusPage.locator('[data-testid="game-over"]').waitFor({ state: "hidden", timeout });
+    await crowdedStatusPage.screenshot({ path: path.join(artifacts, "web-gui-mobile-crowded-status.png"), fullPage: true });
+    const fifthSecret = crowdedStatusPage.locator('[data-testid="self-secret"]').nth(4);
+    await fifthSecret.scrollIntoViewIfNeeded();
+    await fifthSecret.click();
+    await crowdedStatusPage.locator("#card-modal").waitFor({ state: "visible", timeout });
+    assert.match(await crowdedStatusPage.locator("#modal-card-name").innerText(), /测试奥秘 5/);
+    await crowdedStatusPage.locator("#modal-close").click();
+    await crowdedStatusPage.setViewportSize({ width: 820, height: 900 });
+    await assertNoHorizontalOverflow(crowdedStatusPage, "medium crowded hero statuses");
+    const mediumStatuses = await crowdedStatusPage.evaluate(() => {
+      const rack = document.querySelector("#self-hero-status").getBoundingClientRect();
+      const groups = [...document.querySelectorAll("#self-hero-status .hero-status-group")]
+        .map((node) => node.getBoundingClientRect());
+      const stats = [...document.querySelectorAll("#self-board .stat")]
+        .map((node) => node.getBoundingClientRect());
+      return {
+        rack: { left: rack.left, right: rack.right, top: rack.top, bottom: rack.bottom },
+        groups: groups.map((group) => ({ left: group.left, right: group.right })),
+        intersectsStats: stats.some((stat) => rack.left < stat.right && rack.right > stat.left &&
+          rack.top < stat.bottom && rack.bottom > stat.top),
+      };
+    });
+    assert(!mediumStatuses.intersectsStats,
+      `medium hero statuses must not cover minion stats: ${JSON.stringify(mediumStatuses)}`);
+    assert(mediumStatuses.groups.every((group) => group.left >= mediumStatuses.rack.left - 1 &&
+      group.right <= mediumStatuses.rack.right + 1),
+    `medium status groups must fit the hero rack: ${JSON.stringify(mediumStatuses)}`);
+    crowdedStatusPayload = JSON.parse(JSON.stringify(crowdedStatuses));
+    crowdedStatusPayload.revision += 1;
+    crowdedStatusPayload.observation.self.quests = [];
+    crowdedStatusPayload.observation.opponent.quests = [];
+    await crowdedStatusPage.evaluate(() => window.fireplaceWebGui.loadState(true));
+    await crowdedStatusPage.waitForFunction(() => !document.querySelector('[data-testid="self-quest"]') &&
+      !document.querySelector('[data-testid="opponent-quest"]'), null, { timeout });
+    assert.equal(await crowdedStatusPage.locator('[data-testid="self-quest"]').count(), 0,
+      "expired own quest must disappear after a fresh snapshot");
+    assert.equal(await crowdedStatusPage.locator('[data-testid="opponent-quest"]').count(), 0,
+      "expired opponent quest must disappear after a fresh snapshot");
+    await crowdedStatusPage.close();
 
     // Isolate visual hand states at the JSON boundary.  The Python snapshot
     // test checks the real engine values; this checks their browser treatment.
