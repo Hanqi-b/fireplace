@@ -7,6 +7,7 @@
   var API_RETURN = "/api/return";
   var Model = window.FireplaceActionModel;
   var StatusView = window.FireplaceStatusView;
+  var ModifierView = window.FireplaceModifierView;
   var elements = {};
   var guiState = createGuiState(Model);
   var busy = false;
@@ -304,6 +305,7 @@
       "modal-card-id",
       "modal-stats",
       "modal-statuses",
+      "modal-modifiers",
       "modal-card-text",
     ].forEach(function (id) {
       elements[id] = getElement(id);
@@ -2639,6 +2641,7 @@
     });
     StatusView.renderDetails(elements["modal-statuses"], card, tr);
     setText(elements["modal-card-text"], cardText(card) || tr("noCardText"));
+    ModifierView.renderDetails(elements["modal-modifiers"], card, tr);
     setHidden(elements["card-modal"], false);
     if (focusClose) {
       elements["modal-close"].focus();

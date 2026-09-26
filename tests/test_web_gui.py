@@ -159,10 +159,14 @@ def test_real_snapshot_hides_opponent_hand_and_uses_placeholder(web_game, monkey
         html = response.read()
         assert b"app.js" in html
         assert b"status_view.js" in html
+        assert b"modifier_view.js" in html
         assert b"opponent-mana-value" in html
     with urlopen(base + "/status_view.js", timeout=10) as response:
         assert response.status == 200
         assert b"FireplaceStatusView" in response.read()
+    with urlopen(base + "/modifier_view.js", timeout=10) as response:
+        assert response.status == 200
+        assert b"FireplaceModifierView" in response.read()
     with urlopen(base + "/style.css", timeout=10) as response:
         assert b"placeholder" in response.read().lower()
     with urlopen(base + "/board-scene.webp", timeout=10) as response:
@@ -170,6 +174,50 @@ def test_real_snapshot_hides_opponent_hand_and_uses_placeholder(web_game, monkey
         assert response.headers.get_content_type() == "image/webp"
         assert response.read(4) == b"RIFF"
     status, missing = request(base, "/assets/render/CS2_231")
+    assert status == 404 and missing["error"]
+
+
+def test_modifier_details_are_localized_and_hidden_sources_stay_private(web_game):
+    class TextResolver:
+        def describe(self, card_id, *, locale):
+            names = {"UNG_952e": "尖刺坐骑效果", "UNG_952": "剑龙骑术"}
+            return SimpleNamespace(name=names.get(card_id, card_id),
+                                   text="获得亡语。" if card_id == "UNG_952e" else "",
+                                   locale=locale)
+
+        def resolve(self, card_id, *, kind, locale):
+            return None
+
+    _app, human, opponent, base = web_game(asset_resolver=TextResolver())
+    ready(base)
+    human.max_mana = 10
+    minion = human.summon("CS2_231")
+    spell = human.give("UNG_952")
+    _, state = request(base)
+    status, state = submit(
+        base, state, action(state, "PLAY_CARD", source_entity_id=spell.entity_id,
+                            target_entity_id=minion.entity_id),
+    )
+    assert status == 200
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        _, state = request(base)
+        modifier = state["observation"]["self"]["board"][0]["active_modifiers"][0]
+        if modifier["effect"]["name"] == "尖刺坐骑效果":
+            break
+        time.sleep(0.02)
+    assert modifier["effect"]["name"] == "尖刺坐骑效果"
+    assert modifier["effect"]["text"] == "获得亡语。"
+    assert modifier["source"]["name"] == "剑龙骑术"
+    assert modifier["grants"] == ["deathrattle"]
+
+    secret_source = opponent.give("EX1_287")
+    secret_source.buff(minion, "CS2_092e")
+    _, state = request(base)
+    hidden = state["observation"]["self"]["board"][0]["active_modifiers"][-1]
+    assert hidden["effect"] is None and hidden["source"] is None
+    assert "EX1_287" not in json.dumps(state)
+    status, missing = request(base, "/assets/render/EX1_287")
     assert status == 404 and missing["error"]
 
 

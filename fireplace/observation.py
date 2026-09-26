@@ -136,7 +136,52 @@ def _card_identity(card, include_cost=False):
     return result
 
 
-def _visible_card_with_options(card, include_cost=False):
+def _effect_identity(card):
+    """A card label for a visible effect, without an entity handle."""
+
+    if card is None or _card_id(card) is None:
+        return None
+    result = {"card_id": _card_id(card), "name": _card_name(card)}
+    printed_text = _text(_get(_get(card, "data"), "text"))
+    if printed_text:
+        result["text"] = printed_text
+    return result
+
+
+def _visible_effect_source(source, viewer):
+    """An effect must not reveal a card still hidden in an opponent zone."""
+
+    zone = _enum_name(_get(source, "zone"))
+    if zone in ("PLAY", "GRAVEYARD"):
+        return True
+    return _get(source, "controller") is viewer and zone in ("HAND", "SECRET")
+
+
+def _active_modifiers(card, viewer):
+    """Project only active attachments, never an inferred history of changes."""
+
+    result = []
+    for buff in _cards(_get(card, "buffs")):
+        source = _get(buff, "source")
+        visible = _visible_effect_source(source, viewer)
+        result.append({
+            "kind": "enchantment",
+            "effect": _effect_identity(buff) if visible else None,
+            "source": _effect_identity(source) if visible else None,
+            "grants": ["deathrattle"] if _bool(_get(buff, "has_deathrattle")) else [],
+        })
+    for slot in _cards(_get(card, "slots")):
+        source = _get(slot, "source")
+        result.append({
+            "kind": "aura",
+            "effect": None,
+            "source": _effect_identity(source) if _visible_effect_source(source, viewer) else None,
+            "grants": [],
+        })
+    return result
+
+
+def _visible_card_with_options(card, viewer, include_cost=False):
     result = _card_identity(card, include_cost=include_cost)
     if include_cost:
         # Only the viewer's hand uses this projection.  Compare the live card
@@ -145,6 +190,7 @@ def _visible_card_with_options(card, include_cost=False):
         data = _get(card, "data")
         result["printed_cost"] = _optional_int(_get(data, "cost"))
         result["powered_up"] = _bool(_get(card, "powered_up"))
+        result["active_modifiers"] = _active_modifiers(card, viewer)
         card_type = _get(card, "type", _get(data, "type"))
         if card_type in (CardType.MINION, CardType.WEAPON):
             result["atk"] = _optional_int(_get(card, "atk"))
@@ -152,6 +198,7 @@ def _visible_card_with_options(card, include_cost=False):
         if card_type == CardType.MINION:
             result["max_health"] = _optional_int(_get(card, "max_health"))
             result["printed_health"] = _optional_int(_get(data, "health"))
+            result["has_deathrattle"] = _bool(_get(card, "has_deathrattle"))
         elif card_type == CardType.WEAPON:
             result["durability"] = _optional_int(_get(card, "durability"))
             result["printed_durability"] = _optional_int(_get(data, "durability"))
@@ -161,7 +208,7 @@ def _visible_card_with_options(card, include_cost=False):
     return result
 
 
-def _character(card, include_position=False):
+def _character(card, viewer, include_position=False):
     """Project a publicly visible hero or minion."""
 
     dormant = _bool(_get(card, "dormant"))
@@ -189,6 +236,10 @@ def _character(card, include_position=False):
             "can_attack": _bool(_call(card, "can_attack")),
         }
     )
+    data = _get(card, "data")
+    result["printed_atk"] = _optional_int(_get(data, "atk"))
+    result["printed_health"] = _optional_int(_get(data, "health"))
+    result["active_modifiers"] = _active_modifiers(card, viewer)
     if dormant:
         # Fireplace keeps this as the number of turns remaining.  It can be
         # stale or malformed on lightweight objects, so never expose a
@@ -199,7 +250,7 @@ def _character(card, include_position=False):
     return result
 
 
-def _weapon(card):
+def _weapon(card, viewer):
     if card is None:
         return None
     result = _card_identity(card)
@@ -212,6 +263,10 @@ def _weapon(card):
             "exhausted": _bool(_get(card, "exhausted")),
         }
     )
+    data = _get(card, "data")
+    result["printed_atk"] = _optional_int(_get(data, "atk"))
+    result["printed_durability"] = _optional_int(_get(data, "durability"))
+    result["active_modifiers"] = _active_modifiers(card, viewer)
     return result
 
 
@@ -244,7 +299,7 @@ def _count(value):
         return 0
 
 
-def _player_projection(player, include_private):
+def _player_projection(player, viewer, include_private):
     hero = _get(player, "hero")
     hero_power = _get(player, "hero_power")
     if hero_power is None:
@@ -256,9 +311,9 @@ def _player_projection(player, include_private):
     secrets = _cards(_get(player, "secrets"))
 
     result = {
-        "hero": _character(hero) if hero is not None else None,
-        "board": [_character(card, include_position=True) for card in field],
-        "weapon": _weapon(_get(player, "weapon")),
+        "hero": _character(hero, viewer) if hero is not None else None,
+        "board": [_character(card, viewer, include_position=True) for card in field],
+        "weapon": _weapon(_get(player, "weapon"), viewer),
         "hero_power": _hero_power(hero_power),
         "mana": _int(_get(player, "mana")),
         "max_mana": _int(_get(player, "max_mana")),
@@ -266,7 +321,7 @@ def _player_projection(player, include_private):
     }
     if include_private:
         result["hand"] = [
-            _visible_card_with_options(card, include_cost=True) for card in hand
+            _visible_card_with_options(card, viewer, include_cost=True) for card in hand
         ]
         if hero_power is not None:
             result["hero_power"] = _hero_power(hero_power)
@@ -422,7 +477,7 @@ def build_observation(game, viewer, phase=None):
         "turn": _int(_get(game, "turn")),
         "phase": resolved_phase,
         "active_seat": _active_seat(game, players, resolved_phase),
-        "self": _player_projection(viewer, include_private=True),
-        "opponent": _player_projection(opponent, include_private=False),
+        "self": _player_projection(viewer, viewer, include_private=True),
+        "opponent": _player_projection(opponent, viewer, include_private=False),
         "pending_choice": _pending_choice(viewer),
     }

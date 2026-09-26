@@ -3,6 +3,7 @@ include fireplace/web_gui/index.html
 include fireplace/web_gui/action_model.js
 include fireplace/web_gui/i18n.js
 include fireplace/web_gui/status_view.js
+include fireplace/web_gui/modifier_view.js
 include fireplace/web_gui/app.js
 include fireplace/web_gui/style.css
 include fireplace/web_gui/board-scene.webp

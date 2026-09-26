@@ -2502,6 +2502,8 @@ html[lang="en"] .decision-section.phase-mulligan::after {
 .card-modal-dialog {
   position: relative;
   width: min(680px, 100%);
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
   border: 2px solid rgb(201 155 83 / 78%);
   border-radius: 16px;
   padding: 25px;
@@ -2570,6 +2572,63 @@ html[lang="en"] .decision-section.phase-mulligan::after {
 
 .modal-statuses[hidden] {
   display: none;
+}
+
+.modal-modifiers {
+  margin-top: 15px;
+  padding: 12px 14px;
+  border: 1px solid rgb(201 155 83 / 48%);
+  border-radius: 10px;
+  background: rgb(16 20 30 / 55%);
+  color: var(--parchment);
+  font-size: .82rem;
+  line-height: 1.45;
+}
+
+.modal-modifiers[hidden] {
+  display: none;
+}
+
+.modal-modifiers h3,
+.modal-modifiers h4 {
+  margin: 0 0 8px;
+  color: var(--gold-light);
+  font-size: .9rem;
+}
+
+.modal-modifiers h4 {
+  margin-top: 13px;
+  font-size: .78rem;
+}
+
+.modifier-stat-change {
+  margin: 3px 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.modifier-entry {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--gold-light);
+  border-radius: 4px;
+  background: rgb(201 155 83 / 9%);
+}
+
+.modifier-entry strong {
+  color: #ffe3ad;
+}
+
+.modifier-entry p,
+.modifier-unattributed {
+  margin: 4px 0 0;
+}
+
+.modifier-label {
+  color: var(--gold-light);
+}
+
+.modifier-rules {
+  color: var(--muted);
 }
 
 .keyword-detail {

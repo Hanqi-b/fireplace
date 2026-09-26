@@ -541,8 +541,12 @@ async function main() {
     ];
     visual.observation.self.board = [
       { entity_id: 91511, card_id: "CS2_231", name: "词条测试随从", atk: 3, health: 4,
-        max_health: 4, taunt: true, divine_shield: true, poisonous: true,
-        has_deathrattle: true, lifesteal: true },
+        max_health: 4, printed_atk: 1, printed_health: 1,
+        taunt: true, divine_shield: true, poisonous: true,
+        has_deathrattle: true, lifesteal: true,
+        active_modifiers: [{ kind: "enchantment", effect: { card_id: "UNG_952e",
+          name: "尖刺坐骑效果", text: "亡语：召唤一个随从。" },
+        source: { card_id: "UNG_952", name: "剑龙骑术" }, grants: ["deathrattle"] }] },
       { entity_id: 91512, card_id: "CS2_231", name: "休眠测试随从", atk: 2, health: 2,
         max_health: 2, dormant: true, dormant_turns: 2 },
     ];
@@ -622,6 +626,9 @@ async function main() {
     await keywordMinion.locator('[data-testid="card-inspect"]').click();
     await visualPage.locator("#card-modal").waitFor({ state: "visible", timeout });
     assert.match(await visualPage.locator("#modal-statuses").innerText(), /嘲讽.*圣盾.*剧毒.*亡语.*吸血/s);
+    assert.match(await visualPage.locator("#modal-modifiers").innerText(),
+      /攻击\s+1 → 3.*生命\s+1 → 4.*当前生效效果.*尖刺坐骑效果.*来源：剑龙骑术.*获得：亡语/s);
+    await visualPage.screenshot({ path: path.join(artifacts, "web-gui-card-effect-details.png"), fullPage: true });
     await visualPage.locator("#modal-close").click();
     await dormantMinion.locator('[data-testid="card-inspect"]').click();
     assert.match(await visualPage.locator("#modal-statuses").innerText(), /休眠.*剩余 2 回合/);
@@ -638,6 +645,13 @@ async function main() {
     await visualPage.screenshot({ path: path.join(artifacts, "web-gui-hand-live-stats.png"), fullPage: true });
     await visualPage.setViewportSize({ width: 390, height: 844 });
     await assertNoHorizontalOverflow(visualPage, "mobile hand live stats");
+    await keywordMinion.locator('[data-testid="card-inspect"]').click();
+    assert(await visualPage.locator("#modal-modifiers").isVisible());
+    assert(await visualPage.locator("#modal-modifiers").evaluate((node) => {
+      const bounds = node.getBoundingClientRect();
+      return bounds.width > 0 && bounds.right <= window.innerWidth;
+    }), "effect details must fit the mobile viewport");
+    await visualPage.locator("#modal-close").click();
     assert.equal(await dormantMinion.locator(".dormant-counter").innerText(), "2");
     assert(await keywordMinion.locator(".stat.health strong").isVisible(),
       "keyword layer must leave the minion health visible on mobile");
@@ -685,12 +699,19 @@ async function main() {
     await visualPage.locator("#modal-close").click();
     await keywordMinion.locator('[data-testid="card-inspect"]').click();
     assert.match(await visualPage.locator("#modal-statuses").innerText(), /Deathrattle/);
+    assert.match(await visualPage.locator("#modal-modifiers").innerText(), /Stats and effects.*Active effects.*Grants: Deathrattle/s);
     visual.revision += 1;
     visual.observation.self.board[0].has_deathrattle = false;
+    visual.observation.self.board[0].atk = 1;
+    visual.observation.self.board[0].health = 1;
+    visual.observation.self.board[0].max_health = 1;
+    visual.observation.self.board[0].active_modifiers = [];
     await visualPage.evaluate(() => window.fireplaceWebGui.loadState(true));
     assert.equal(await keywordMinion.locator(".deathrattle-sigil").count(), 0);
     assert(!await visualPage.locator("#modal-statuses").innerText().then((value) => value.includes("Deathrattle")),
       "open details must drop deathrattle after the next public snapshot removes it");
+    assert(await visualPage.locator("#modal-modifiers").evaluate((node) => node.hidden),
+      "open details must drop expired effects after a fresh snapshot");
     await visualPage.locator("#modal-close").click();
     await visualPage.close();
 

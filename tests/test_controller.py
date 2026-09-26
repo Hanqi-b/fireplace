@@ -242,6 +242,45 @@ def test_observation_exposes_public_minion_statuses_on_both_boards():
     assert silenced_minion["has_deathrattle"] is False
 
 
+def test_observation_records_active_buff_and_deathrattle_source_without_hidden_cards():
+    current = session(hero=CardClass.PALADIN.default_hero)
+    finish_mulligan(current)
+    player = current.game.current_player
+    player.max_mana = 10
+    minion = player.summon("CS2_231")
+    spell = player.give("UNG_952")
+    play = next(action for action in current.legal_actions(player)
+                if action.type == "PLAY_CARD" and action.source_entity_id == spell.entity_id
+                and action.target_entity_id == minion.entity_id)
+    current.execute(player, play)
+
+    public = current.observation(player)["self"]["board"][0]
+    assert (public["printed_atk"], public["atk"]) == (1, 3)
+    assert (public["printed_health"], public["max_health"]) == (1, 7)
+    assert public["has_deathrattle"] is True
+    assert public["active_modifiers"] == [{
+        "kind": "enchantment",
+        "effect": {"card_id": "UNG_952e", "name": "On a Stegodon"},
+        "source": {"card_id": "UNG_952", "name": "Spikeridged Steed"},
+        "grants": ["deathrattle"],
+    }]
+
+    # A card still in the opponent's hand may cause an effect, but its
+    # identity must not enter the public projection or asset allowlist.
+    hidden_source = player.opponent.give("CS2_092")
+    hidden_source.buff(minion, "CS2_092e")
+    opposite_view = current.observation(player)
+    hidden_modifier = opposite_view["self"]["board"][0]["active_modifiers"][-1]
+    assert hidden_modifier["effect"] is None
+    assert hidden_modifier["source"] is None
+    assert hidden_source.id not in json.dumps(opposite_view)
+
+    minion.silence()
+    after = current.observation(player)["self"]["board"][0]
+    assert after["has_deathrattle"] is False
+    assert after["active_modifiers"] == []
+
+
 def test_weapon_hero_attack_uses_attack_action():
     current = session(hero=CardClass.PALADIN.default_hero)
     finish_mulligan(current)
