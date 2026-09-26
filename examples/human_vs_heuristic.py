@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Play a Fireplace game against a computer agent in the terminal.
 
-Run from the repository root with ``python examples/human_vs_random.py``.
+Run from the repository root with ``python examples/human_vs_heuristic.py``.
 The example intentionally constructs the game here so the application layer
 can be tried without changing the engine's existing batch simulation helper.
 """
@@ -22,7 +22,7 @@ from hearthstone.enums import PlayState
 
 from fireplace import cards
 from fireplace.action_log import ActionLog
-from fireplace.agents import HeuristicAgent, HumanTUIAgent, RandomAgent, UserQuit
+from fireplace.agents import HeuristicAgent, HumanTUIAgent, UserQuit
 from fireplace.controller import GameSession
 from fireplace.game import Game
 from fireplace.player import Player
@@ -30,7 +30,7 @@ from fireplace.utils import random_class, random_draft
 
 
 def build_game(
-    seed: int | None = None, opponent_name: str = "Random"
+    seed: int | None = None, opponent_name: str = "Heuristic"
 ) -> tuple[Game, Player, Player]:
     """Create two random classes/decks using the game's seeded RNG."""
 
@@ -73,26 +73,16 @@ def main(argv: list[str] | None = None) -> int:
         metavar="PATH",
         help="save accepted player decisions and game metadata as JSON",
     )
-    parser.add_argument(
-        "--opponent",
-        choices=("random", "heuristic"),
-        default="random",
-        help="computer opponent policy (default: random)",
-    )
     args = parser.parse_args(argv)
 
     cards.db.initialize()
-    opponent_name = "Heuristic" if args.opponent == "heuristic" else "Random"
+    opponent_name = "Heuristic"
     game, human, opponent = build_game(args.seed, opponent_name)
-    opponent_agent = (
-        HeuristicAgent()
-        if args.opponent == "heuristic"
-        else RandomAgent(seed=args.seed)
-    )
+    opponent_agent = HeuristicAgent()
     agents = {human: HumanTUIAgent(), opponent: opponent_agent}
     action_log = ActionLog(
         game,
-        mode="human_vs_%s" % args.opponent,
+        mode="human_vs_heuristic",
         output_path=args.log,
         seed=args.seed,
     )

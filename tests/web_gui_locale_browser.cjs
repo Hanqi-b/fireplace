@@ -96,7 +96,7 @@ async function waitForDescription(page, locale, contract) {
   return { state, card };
 }
 
-async function startMatch(page, locale, policy, nickname, contract) {
+async function startMatch(page, locale, nickname, contract) {
   await page.locator(`#locale-${locale}`).click();
   await page.locator("#nickname-input").fill(nickname);
   const enter = page.locator("#enter-lobby-button");
@@ -104,7 +104,8 @@ async function startMatch(page, locale, policy, nickname, contract) {
     await enter.click();
   }
   await page.locator("#lobby-setup").waitFor({ state: "visible", timeout });
-  await page.locator(`input[name="opponent"][value="${policy}"]`).check();
+  assert.equal(await page.locator("#opponent-heuristic-title").innerText(), locale === "enUS" ? "Smart AI" : "聪明 AI");
+  assert.equal(await page.locator("input[name=opponent]").count(), 0, "the lobby must not offer a policy selector");
 
   const imageResponsePromise = page.waitForResponse((response) => {
     const url = new URL(response.url());
@@ -157,7 +158,7 @@ async function startMatch(page, locale, policy, nickname, contract) {
     assert(!serializedCard.includes("测试小精灵"), "English card data must never contain the Chinese fixture name");
   }
   await page.screenshot({ path: path.join(artifacts, `web-gui-locale-${locale}.png`), fullPage: true });
-  return { locale, policy, sessionId: state.session_id, state, cardId: card.card_id, name: card.name, text: card.text, imageBytes: expectedBytes.length };
+  return { locale, opponent: "heuristic", sessionId: state.session_id, state, cardId: card.card_id, name: card.name, text: card.text, imageBytes: expectedBytes.length };
 }
 
 async function finishFixtureMatch(page) {
@@ -251,7 +252,7 @@ async function finishFixtureMatch(page) {
     assert.equal(await page.locator("#opponent-heuristic-title").innerText(), "Smart AI");
     await page.screenshot({ path: path.join(artifacts, "web-gui-lobby-enUS.png"), fullPage: true });
 
-    const chinese = await startMatch(page, "zhCN", "random", "Locale Fixture Player", fixtureInfo.contracts.zhCN);
+    const chinese = await startMatch(page, "zhCN", "Locale Fixture Player", fixtureInfo.contracts.zhCN);
     assert.equal(chinese.state.observation.phase, "MULLIGAN");
     const oldActionIndex = chinese.state.legal_actions.findIndex((action) =>
       action.type === "MULLIGAN" && action.mulligan_entity_ids.length === 0);
@@ -266,7 +267,7 @@ async function finishFixtureMatch(page) {
     assert.equal(secondTabState.session_id, chinese.sessionId, "both tabs should begin on the same Chinese match");
     await finishFixtureMatch(secondTab);
 
-    const english = await startMatch(secondTab, "enUS", "heuristic", "Locale Fixture Player", fixtureInfo.contracts.enUS);
+    const english = await startMatch(secondTab, "enUS", "Locale Fixture Player", fixtureInfo.contracts.enUS);
 
     const staleResponsePromise = page.waitForResponse((response) =>
       response.request().method() === "POST" && new URL(response.url()).pathname === "/api/action" && response.status() === 409,

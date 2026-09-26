@@ -16,7 +16,7 @@ from hearthstone.enums import CardClass
 import card_assets
 from card_assets import AssetResolver
 from fireplace import cards
-from fireplace.agents import HeuristicAgent, RandomAgent
+from fireplace.agents import HeuristicAgent
 from fireplace.agent_api import Action
 from fireplace.controller import GameSession
 from fireplace.game import Game
@@ -34,13 +34,13 @@ def web_game():
     servers = []
 
     def create(*, hero=CardClass.MAGE.default_hero, seed=3, asset_resolver=None,
-               deck_size=10, opponent_policy="random", locale="zhCN"):
+               deck_size=10, locale="zhCN"):
         human = Player("Human", ["CS2_231"] * deck_size, hero)
         opponent = Player("Computer", ["CS2_231"] * deck_size, hero)
         game = Game((human, opponent), seed=seed)
         app = WebGame(
             GameSession(game, {}), human,
-            HeuristicAgent() if opponent_policy == "heuristic" else RandomAgent(seed=seed),
+            HeuristicAgent(),
             asset_resolver=asset_resolver,
             locale=locale,
         )
@@ -112,6 +112,14 @@ def ready(base):
 def test_branch_attack_and_end_turn(web_game):
     app, human, opponent, base = web_game()
     state = ready(base)
+    # Keep this test focused on the human attack path: the heuristic opponent
+    # can otherwise kill a one-health Wisp before the turn comes back.
+    app.opponent_agent = SimpleNamespace(
+        choose_action=lambda _observation, actions: next(
+            (candidate for candidate in actions if candidate.type == "END_TURN"),
+            actions[0],
+        )
+    )
     human.max_mana = 10
     nourish = human.give("EX1_164")
     wisp = human.give("CS2_231")
@@ -720,9 +728,8 @@ def test_terminal_action_returns_outcome(web_game):
     assert state["outcome"] == {"winner": "Alice", "human_won": True}
 
 
-@pytest.mark.parametrize("opponent_policy", ["random", "heuristic"])
-def test_complete_match_through_http_actions(web_game, opponent_policy):
-    app, human, opponent, base = web_game(deck_size=5, opponent_policy=opponent_policy)
+def test_complete_match_through_http_actions(web_game):
+    app, human, opponent, base = web_game(deck_size=5)
     status, state = request(base)
     assert status == 200
     seen = set()
@@ -745,11 +752,10 @@ def test_complete_match_through_http_actions(web_game, opponent_policy):
     assert state["legal_actions"] == []
 
 
-@pytest.mark.parametrize("opponent_policy", ["random", "heuristic"])
-def test_real_draft_reaches_game_over_through_value_actions(monkeypatch, opponent_policy):
+def test_real_draft_reaches_game_over_through_value_actions(monkeypatch):
     monkeypatch.setattr(web_server, "_AssetResolver", None)
-    game, human, opponent = build_game(seed=2, opponent_name=opponent_policy)
-    ai = HeuristicAgent() if opponent_policy == "heuristic" else RandomAgent(seed=2)
+    game, human, opponent = build_game(seed=2, opponent_name="Heuristic")
+    ai = HeuristicAgent()
     human_agent = HeuristicAgent()
     app = WebGame(GameSession(game, {}), human, ai)
     try:
@@ -779,7 +785,7 @@ def test_real_draft_reaches_game_over_through_value_actions(monkeypatch, opponen
 def lobby_server():
     servers = []
 
-    def create(*, seed=11, opponent="random", asset_resolver=None):
+    def create(*, seed=11, opponent="heuristic", asset_resolver=None):
         app = WebGameManager(
             seed=seed, opponent=opponent, asset_resolver=asset_resolver
         )
@@ -803,7 +809,7 @@ def _finish_lobby_match(app, base, state=None):
         status, state = request(
             base,
             "/api/start",
-            {"nickname": "Alice", "opponent": "random", "locale": "enUS"},
+            {"nickname": "Alice", "locale": "enUS"},
         )
         assert status == 200 and state["mode"] == "match"
     status, state = submit(base, state, action(state, "MULLIGAN", mulligan_entity_ids=[]))
@@ -830,7 +836,7 @@ def _finish_lobby_match(app, base, state=None):
 
 
 def test_lobby_start_locale_nickname_and_terminal_return(lobby_server):
-    app, base = lobby_server(opponent="heuristic")
+    app, base = lobby_server()
     status, lobby = request(base)
     assert status == 200
     assert lobby == {"mode": "lobby", "opponent": "heuristic"}
@@ -838,7 +844,7 @@ def test_lobby_start_locale_nickname_and_terminal_return(lobby_server):
     status, started = request(
         base,
         "/api/start",
-        {"nickname": "  Alice  ", "opponent": "heuristic", "locale": "enUS"},
+        {"nickname": "  Alice  ", "locale": "enUS"},
     )
     assert status == 200
     assert started["mode"] == "match"
@@ -849,7 +855,7 @@ def test_lobby_start_locale_nickname_and_terminal_return(lobby_server):
     status, rejected = request(
         base,
         "/api/start",
-        {"nickname": "Second", "opponent": "random", "locale": "zhCN"},
+        {"nickname": "Second", "locale": "zhCN"},
     )
     assert status == 409 and rejected["session_id"] == started["session_id"]
 
@@ -860,6 +866,20 @@ def test_lobby_start_locale_nickname_and_terminal_return(lobby_server):
         {"session_id": terminal["session_id"], "revision": terminal["revision"]},
     )
     assert status == 200 and lobby["mode"] == "lobby"
+
+
+def test_lobby_rejects_removed_random_policy(lobby_server):
+    with pytest.raises(ValueError, match="heuristic"):
+        WebGameManager(opponent="random")
+    app, base = lobby_server()
+    status, rejected = request(
+        base,
+        "/api/start",
+        {"nickname": "Alice", "opponent": "random", "locale": "zhCN"},
+    )
+    assert status == 400
+    assert rejected["mode"] == "lobby"
+    assert app.active is None
 
 
 def test_lobby_rejects_stale_actions_after_return_and_new_match(lobby_server):
@@ -890,7 +910,7 @@ def test_lobby_rejects_stale_actions_after_return_and_new_match(lobby_server):
     status, second = request(
         base,
         "/api/start",
-        {"nickname": "Bob", "opponent": "random", "locale": "zhCN"},
+        {"nickname": "Bob", "locale": "zhCN"},
     )
     assert status == 200 and second["session_id"] != first_terminal["session_id"]
     status, stale = request(
@@ -911,14 +931,14 @@ def test_lobby_start_and_return_keep_local_http_guards(lobby_server):
     status, rejected = request(
         base,
         "/api/start",
-        {"nickname": "Alice", "opponent": "random", "locale": "zhCN"},
+        {"nickname": "Alice", "locale": "zhCN"},
         {"Origin": "http://attacker.example"},
     )
     assert status == 403 and rejected["mode"] == "lobby"
     status, rejected = request(
         base,
         "/api/start",
-        {"nickname": "Alice", "opponent": "random", "locale": "zhCN"},
+        {"nickname": "Alice", "locale": "zhCN"},
         {"Content-Type": "text/plain"},
     )
     assert status == 415 and rejected["mode"] == "lobby"

@@ -14,18 +14,13 @@ from .server import WebGameManager, make_server
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seed", type=int, default=None, help="seed the game RNG")
-    parser.add_argument(
-        "--opponent",
-        choices=("random", "heuristic"),
-        default="random",
-        help="computer opponent policy (default: random)",
-    )
     parser.add_argument("--port", type=int, default=8765, help="local HTTP port")
     args = parser.parse_args(argv)
 
     # The browser now opens at a lobby.  Game construction is delayed until
-    # the user submits a nickname, locale, and opponent choice to /api/start.
-    web_game = WebGameManager(seed=args.seed, opponent=args.opponent)
+    # the user submits a nickname and locale to /api/start.  The local web
+    # opponent is always the heuristic policy.
+    web_game = WebGameManager(seed=args.seed)
     # Deliberately use the fixed loopback address.  This tool is a local
     # browser UI and must not expose a live game on the network.
     server = make_server(web_game, host="127.0.0.1", port=args.port)

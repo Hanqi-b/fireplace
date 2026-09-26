@@ -14,7 +14,6 @@
   var currentLocale = normalizeLocale(readStored("fireplace.locale", "zhCN"));
   var requestGeneration = 0;
   var currentMode = "lobby";
-  var currentOpponent = "random";
   var lobbyStage = "login";
   var noticeTimer = null;
   var pollTimer = null;
@@ -234,12 +233,10 @@
       "locale-zhCN",
       "locale-enUS",
       "opponent-label",
-      "opponent-random-option",
       "opponent-heuristic-option",
-      "opponent-random-title",
-      "opponent-random-description",
       "opponent-heuristic-title",
       "opponent-heuristic-description",
+      "opponent-fixed",
       "start-match-button",
       "lobby-status",
       "lobby-footer",
@@ -372,12 +369,6 @@
           setLocale(elements[id].getAttribute("data-locale"), true);
         });
       }
-    });
-    document.querySelectorAll("input[name=opponent]").forEach(function (input) {
-      input.addEventListener("change", function () {
-        currentOpponent = input.value === "heuristic" ? "heuristic" : "random";
-        updateOpponentChoiceStyles();
-      });
     });
   }
 
@@ -516,21 +507,7 @@
     }
     elements["nickname-input"].value = readStored("fireplace.nickname", "");
     setLobbyStage(elements["nickname-input"].value.trim() ? "setup" : "login");
-    var checked = document.querySelector("input[name=opponent]:checked");
-    currentOpponent = checked && checked.value === "heuristic" ? "heuristic" : "random";
     updateLocaleControls();
-    updateOpponentChoiceStyles();
-  }
-
-  function updateOpponentChoiceStyles() {
-    ["random", "heuristic"].forEach(function (opponent) {
-      var input = document.querySelector("input[name=opponent][value=" + opponent + "]");
-      var option = elements["opponent-" + opponent + "-option"];
-      var selected = Boolean(input && input.checked);
-      if (option) {
-        option.classList.toggle("is-selected", selected);
-      }
-    });
   }
 
   function setLobbyStage(stage) {
@@ -588,17 +565,15 @@
     setText(elements["nickname-hint"], tr("lobby.nicknameHint"));
     setText(elements["language-label"], tr("lobby.language"));
     setText(elements["opponent-label"], tr("lobby.opponent"));
-    setText(elements["opponent-random-title"], tr("lobby.random"));
-    setText(elements["opponent-random-description"], tr("lobby.randomDescription"));
     setText(elements["opponent-heuristic-title"], tr("lobby.heuristic"));
     setText(elements["opponent-heuristic-description"], tr("lobby.heuristicDescription"));
+    setText(elements["opponent-fixed"], tr("lobby.heuristicFixed"));
     setText(elements["start-match-button"], tr("lobby.start"));
     setText(elements["lobby-footer"], tr("lobby.footer"));
     if (elements["nickname-input"]) {
       elements["nickname-input"].placeholder = tr("lobby.nicknamePlaceholder");
     }
     updateLocaleControls();
-    updateOpponentChoiceStyles();
     setLobbyStage(lobbyStage);
   }
 
@@ -636,8 +611,6 @@
       return;
     }
     writeStored("fireplace.nickname", nickname);
-    currentOpponent = document.querySelector("input[name=opponent]:checked") &&
-      document.querySelector("input[name=opponent]:checked").value === "heuristic" ? "heuristic" : "random";
     var generation = ++requestGeneration;
     busy = true;
     if (elements["start-match-button"]) {
@@ -651,7 +624,7 @@
         Accept: "application/json",
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ nickname: nickname, opponent: currentOpponent, locale: currentLocale }),
+      body: JSON.stringify({ nickname: nickname, locale: currentLocale }),
     })
       .then(readJsonResponse)
       .then(function (payload) {
@@ -920,15 +893,6 @@
         if (enteredLobby) {
           setLobbyFormValues();
         }
-      }
-      var lobbyDefault = envelope.raw && (envelope.raw.default_opponent || envelope.raw.opponent);
-      if (lobbyDefault === "random" || lobbyDefault === "heuristic") {
-        currentOpponent = lobbyDefault;
-        var defaultInput = document.querySelector("input[name=opponent][value=" + lobbyDefault + "]");
-        if (defaultInput) {
-          defaultInput.checked = true;
-        }
-        updateOpponentChoiceStyles();
       }
       currentLocale = normalizeLocale(envelope.locale || currentLocale);
       applyLocaleToDocument();
@@ -2708,9 +2672,6 @@
       return "";
     }
     var normalized = String(winner).trim().toLowerCase();
-    if (normalized === "random") {
-      return tr("lobby.random");
-    }
     if (normalized === "heuristic") {
       return tr("lobby.heuristic");
     }

@@ -142,7 +142,7 @@ def main() -> int:
     stop = threading.Event()
     with tempfile.TemporaryDirectory(prefix="fireplace-gui-locale-") as temporary:
         resolver = LocaleResolver(Path(temporary))
-        manager = WebGameManager(seed=9301, opponent="random", asset_resolver=resolver)
+        manager = WebGameManager(seed=9301, opponent="heuristic", asset_resolver=resolver)
         server = make_server(manager, host="127.0.0.1", port=args.port)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()

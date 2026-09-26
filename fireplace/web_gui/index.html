@@ -42,15 +42,12 @@
             <div class="lobby-setup" id="lobby-setup" hidden>
               <fieldset class="lobby-fieldset">
                 <legend id="opponent-label">对手 AI</legend>
-                <div class="opponent-choice" role="radiogroup" aria-labelledby="opponent-label">
-                  <label class="opponent-option is-selected" id="opponent-random-option">
-                    <input type="radio" name="opponent" value="random" checked data-testid="opponent-random">
-                    <span class="option-copy"><strong id="opponent-random-title">随机 AI</strong><small id="opponent-random-description">行动不可预测，适合轻松对局。</small></span>
-                  </label>
-                  <label class="opponent-option" id="opponent-heuristic-option">
-                    <input type="radio" name="opponent" value="heuristic" data-testid="opponent-heuristic">
+                <div class="opponent-choice" id="opponent-choice" aria-labelledby="opponent-label">
+                  <div class="opponent-option is-selected" id="opponent-heuristic-option" data-testid="opponent-heuristic" role="status">
+                    <span class="opponent-badge" aria-hidden="true">AI</span>
                     <span class="option-copy"><strong id="opponent-heuristic-title">聪明 AI</strong><small id="opponent-heuristic-description">会根据场面选择更有利的行动。</small></span>
-                  </label>
+                    <span class="opponent-fixed" id="opponent-fixed">固定对手</span>
+                  </div>
                 </div>
               </fieldset>
               <button class="lobby-start primary-button" id="start-match-button" type="submit" data-testid="start-match">开始对战</button>

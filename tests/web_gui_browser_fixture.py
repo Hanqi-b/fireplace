@@ -22,7 +22,7 @@ from collections.abc import Mapping
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from fireplace import cards
-from fireplace.agents import RandomAgent
+from fireplace.agents import HeuristicAgent
 from fireplace.controller import GameSession
 from fireplace.game import Game
 from fireplace.player import Player
@@ -84,10 +84,10 @@ def main() -> int:
 
     cards.db.initialize()
     human = Player("Human", ["CS2_231"] * 30, "HERO_08")
-    opponent = Player("Random", ["CS2_231"] * 30, "HERO_01")
+    opponent = Player("Heuristic", ["CS2_231"] * 30, "HERO_01")
     game = Game((human, opponent), seed=args.seed)
     web_game = ShowcaseGame(
-        GameSession(game, {}), human, RandomAgent(seed=args.seed)
+        GameSession(game, {}), human, HeuristicAgent()
     )
     server = make_server(web_game, host="127.0.0.1", port=args.port)
     thread = threading.Thread(target=server.serve_forever, daemon=True)

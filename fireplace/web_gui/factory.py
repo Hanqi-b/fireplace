@@ -10,7 +10,7 @@ from fireplace.utils import random_class, random_draft
 
 def build_game(
     seed: int | None = None,
-    opponent_name: str = "Random",
+    opponent_name: str = "Heuristic",
     nickname: str = "Human",
 ) -> tuple[Game, Player, Player]:
     """Create the same seeded random match used by the terminal example.

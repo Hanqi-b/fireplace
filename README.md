@@ -68,13 +68,13 @@ Open [http://127.0.0.1:8765/](http://127.0.0.1:8765/) on the same computer.
 The equivalent source-checkout command is `python3 examples/play_web.py --seed 7`;
 `python3 -m fireplace.web_gui` also works. Use `--port 8766` to choose another
 port. The server binds to `127.0.0.1`. Enter a local nickname, choose Chinese
-or English and a Random or Heuristic AI opponent, then start a match. Each match
+or English, then start a match against the Heuristic AI. Each match
 draws random classes and 30-card decks. The nickname and language preference are
 saved only in this browser; there is no password or network account. Language
 can be changed on the start screen and stays fixed during a match. After Game
 Over, return to the start screen to change settings or play again without
-restarting the server. `--opponent heuristic` sets the initial opponent choice
-and `--seed` makes the first game's random setup reproducible. Press Ctrl+C in
+restarting the server. `--seed` makes the first game's random setup
+reproducible. Press Ctrl+C in
 the terminal to stop the server.
 
 The browser receives only the human player's Observation, current legal Action
@@ -106,8 +106,8 @@ a deterministic real-engine match through the GUI, including a stale action,
 and writes desktop, narrow-window and Game Over screenshots under
 `/tmp/fireplace-web-gui-artifacts` by default.
 Run `node tests/web_gui_full_match.cjs` with the same environment variables to
-play complete browser matches against Random in Chinese and Heuristic in
-English on one local server. It uses battlefield clicks and the end-turn button
+play complete browser matches against Heuristic in Chinese and English on one
+local server. It uses battlefield clicks and the end-turn button
 across multiple turns, returns to the start screen after each result, and checks
 that an action from the earlier session is rejected. Run
 `node tests/web_gui_locale_browser.cjs` for a short offline browser check that
@@ -115,20 +115,13 @@ card names, rules text, and renders follow the selected language.
 
 ### Terminal game
 
-Run a terminal game against the random agent from a source checkout:
+Run a terminal game against the Heuristic AI from a source checkout:
 
 ```bash
-python3 examples/human_vs_random.py --seed 7 --log games/match.json
+python3 examples/human_vs_heuristic.py --seed 7 --log games/match.json
 ```
 
-To play against the deterministic rule-based baseline instead, select the
-heuristic opponent:
-
-```bash
-python3 examples/human_vs_random.py --opponent heuristic --seed 7
-```
-
-The heuristic chooses among the same legal actions as the random agent. It
+The heuristic chooses among the legal actions. It
 uses only the acting player's visible observation, so it cannot inspect the
 opponent's hidden hand or deck. It is a simple baseline, not a card-effect
 simulator.

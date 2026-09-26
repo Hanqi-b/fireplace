@@ -35,7 +35,7 @@ except Exception:  # pragma: no cover - import depends on an optional package
 
 _ASSET_KINDS = frozenset({"render", "art", "tile"})
 _LOCALES = frozenset({"zhCN", "enUS"})
-_OPPONENTS = frozenset({"random", "heuristic"})
+_OPPONENTS = frozenset({"heuristic"})
 _ASSET_PENDING = object()
 _JSON_ERROR = object()
 _STATIC_MIME_TYPES = {
@@ -219,7 +219,7 @@ def _validate_locale(value: object) -> str:
 
 def _validate_opponent(value: object) -> str:
     if value not in _OPPONENTS:
-        raise ValueError("opponent must be 'random' or 'heuristic'")
+        raise ValueError("opponent must be 'heuristic'")
     return str(value)
 
 
@@ -592,7 +592,7 @@ class WebGameManager:
         self,
         *,
         seed: int | None = None,
-        opponent: str = "random",
+        opponent: str = "heuristic",
         asset_resolver: object | None = None,
     ) -> None:
         if seed is not None and type(seed) is not int:
@@ -662,27 +662,22 @@ class WebGameManager:
                 raise WebLifecycleError("request body must be a JSON object", 400, current)
             try:
                 nickname = _validate_nickname(payload.get("nickname"))
-                opponent = _validate_opponent(payload.get("opponent"))
+                _validate_opponent(payload.get("opponent", "heuristic"))
                 locale = _validate_locale(payload.get("locale"))
             except ValueError as exc:
                 raise WebLifecycleError(str(exc), 400, current) from exc
 
             # Imports stay local so direct single-match users do not pay for
             # the lobby factory until they actually request a new match.
-            from fireplace.agents import HeuristicAgent, RandomAgent
+            from fireplace.agents import HeuristicAgent
             from fireplace.controller import GameSession
             from .factory import build_game
 
             match_seed = self._next_seed_locked()
-            opponent_name = "Heuristic" if opponent == "heuristic" else "Random"
             game, human, _opponent = build_game(
-                match_seed, opponent_name, nickname=nickname
+                match_seed, "Heuristic", nickname=nickname
             )
-            opponent_agent = (
-                HeuristicAgent()
-                if opponent == "heuristic"
-                else RandomAgent(seed=match_seed)
-            )
+            opponent_agent = HeuristicAgent()
             active = WebGame(
                 GameSession(game, {}),
                 human,
@@ -972,7 +967,7 @@ def make_server(
     port: int = 8000,
     *,
     seed: int | None = None,
-    opponent: str = "random",
+    opponent: str = "heuristic",
 ) -> WebGameHTTPServer:
     """Create a local threaded HTTP server for a game or a fresh lobby."""
 
@@ -991,7 +986,7 @@ def serve(
     port: int = 8000,
     *,
     seed: int | None = None,
-    opponent: str = "random",
+    opponent: str = "heuristic",
 ) -> None:
     """Run a server until interrupted, closing its listening socket."""
 
